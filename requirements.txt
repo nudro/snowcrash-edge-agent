@@ -1,0 +1,36 @@
+# Agentic Libraries
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-core>=0.1.0
+
+# MCP Server
+mcp>=0.1.0
+
+# Model Inference
+llama-cpp-python>=0.2.0
+transformers>=4.35.0
+torch>=2.0.0
+
+# Object Detection (YOLO)
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Utilities
+numpy>=1.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Web Server (for tracking viewer GUI)
+flask>=2.0.0
+
+# Tracking (DeepSORT is built into ultralytics, no additional dependency needed)
+
+# Geographic/Geospatial (memory-efficient)
+shapely>=2.0.0
+pyproj>=3.6.0
+
+# Speech-to-Text
+faster-whisper>=0.3.0  # WhisperSTT (backup)
+nemo_toolkit["asr"]>=1.20.0  # NVIDIA Parakeet STT (primary)
+

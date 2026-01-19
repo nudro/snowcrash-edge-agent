@@ -1,0 +1,43 @@
+# Models (too large for git)
+models/
+*.gguf
+*.nemo
+*.pt
+*.onnx
+*.ckpt
+*.pth
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+tmp/
+temp/
+
+# YOLO
+yolov8n.pt
+yolo26n-seg.pt
+
