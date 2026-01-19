@@ -24,7 +24,7 @@ from agent.langchain_tools import (
 from agent.query_keywords import (
     TRACKING_KEYWORDS, STATS_KEYWORDS, DISTANCE_KEYWORDS, DISTANCE_COMPARISON_KEYWORDS,
     IMAGE_VIDEO_KEYWORDS, VIDEO_KEYWORDS,
-    TOOL_QUERY_KEYWORDS, MOVEMENT_KEYWORDS, HOW_LONG_KEYWORDS, TOOL_KEYWORDS,
+    TOOL_QUERY_KEYWORDS, MOVEMENT_KEYWORDS, SPEED_KEYWORDS, HOW_LONG_KEYWORDS, TOOL_KEYWORDS,
     PRINT_DATA_KEYWORDS, TRACK_ID_KEYWORDS, COUNT_QUERY_KEYWORDS, DESCRIPTIVE_DATA_KEYWORDS,
     COLOR_QUERY_KEYWORDS, VIEW_GUI_KEYWORDS, COMMON_OBJECT_CLASSES, FOLLOW_UP_PATTERNS,
     TIMESTAMP_KEYWORDS, FRAME_KEYWORDS, BOTH_LOGGING_KEYWORDS,
@@ -324,6 +324,50 @@ You can ask me to use any of these tools by describing what you want to do in na
             
             except Exception as e:
                 return f"Error checking movement: {str(e)}. Please ensure the web viewer is running."
+        
+        # Check for speed queries - return speed estimates for objects
+        is_speed_query = any(keyword in prompt_lower for keyword in SPEED_KEYWORDS)
+        
+        if is_speed_query and self.web_viewer is not None:
+            try:
+                # Extract object class from prompt if specified
+                object_class = None
+                for obj_class in COMMON_OBJECT_CLASSES:
+                    if obj_class in prompt_lower:
+                        object_class = obj_class
+                        break
+                
+                # Get tracks from web viewer
+                with self.web_viewer.tracks_lock:
+                    tracks = list(self.web_viewer.tracks_data.values())
+                
+                # Filter by object class if specified
+                if object_class:
+                    tracks = [t for t in tracks if t.get("class", "").lower() == object_class.lower()]
+                
+                if not tracks:
+                    if object_class:
+                        return f"No {object_class} objects are currently being tracked."
+                    else:
+                        return "No objects are currently being tracked."
+                
+                # Format response with speed estimates
+                response = "Speed estimates:\n"
+                for track in tracks:
+                    track_id = track.get("track_id")
+                    cls = track.get("class", "unknown")
+                    avg_speed = track.get("average_speed_pixels_per_second", 0.0)
+                    velocity = track.get("velocity", {"vx": 0.0, "vy": 0.0})
+                    
+                    response += f"  - {cls} (ID: {track_id}): {avg_speed:.2f} px/s"
+                    if velocity.get("vx") != 0.0 or velocity.get("vy") != 0.0:
+                        response += f" (vx: {velocity['vx']:.2f}, vy: {velocity['vy']:.2f} px/s)"
+                    response += "\n"
+                
+                return response.strip()
+            
+            except Exception as e:
+                return f"Error getting speed estimates: {str(e)}. Please ensure the web viewer is running."
         
         # Check for "how long" queries - calculate track duration
         is_how_long_query = any(keyword in prompt_lower for keyword in HOW_LONG_KEYWORDS)

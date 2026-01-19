@@ -65,6 +65,12 @@ MOVEMENT_KEYWORDS = [
     "is anything moving", "detect movement", "check movement"
 ]
 
+SPEED_KEYWORDS = [
+    "speed", "how fast", "velocity", "speed of", "fast is", "how fast is",
+    "speed of the", "how fast is the", "what speed", "what's the speed",
+    "speed for", "velocity of", "rate of movement"
+]
+
 HOW_LONG_KEYWORDS = [
     "how long", "how long has", "how long been", "duration", "been in video",
     "been in frame", "time in", "time on video", "minutes in"
