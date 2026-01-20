@@ -342,9 +342,9 @@ def main():
     if args.gui_stt_audio and args.gui_viewer == "chatgui":
         try:
             from tools.parakeet_stt import create_parakeet_stt
-            print("[MAIN] Initializing Parakeet STT for chatgui audio input...")
-            parakeet_stt_instance = create_parakeet_stt(model_path=args.stt_model_path)
-            print("[OK] Parakeet STT initialized for chatgui")
+            print("[MAIN] Initializing Parakeet STT for chatgui audio input (GPU)...")
+            parakeet_stt_instance = create_parakeet_stt(model_path=args.stt_model_path, device="cuda")
+            print("[OK] Parakeet STT initialized for chatgui (GPU)")
         except ImportError:
             print("[ERROR] NVIDIA NeMo toolkit not installed. Install with:")
             print("  pip install -U nemo_toolkit[\"asr\"]")
@@ -400,9 +400,9 @@ def main():
                 if parakeet_stt_instance is None:
                     try:
                         from tools.parakeet_stt import create_parakeet_stt
-                        print("[MAIN] Initializing Parakeet STT for AudioGUI (required)...")
-                        parakeet_stt_instance = create_parakeet_stt(model_path=args.stt_model_path)
-                        print("[OK] Parakeet STT initialized for AudioGUI")
+                        print("[MAIN] Initializing Parakeet STT for AudioGUI (required, GPU)...")
+                        parakeet_stt_instance = create_parakeet_stt(model_path=args.stt_model_path, device="cuda")
+                        print("[OK] Parakeet STT initialized for AudioGUI (GPU)")
                     except Exception as e:
                         print(f"[ERROR] Failed to initialize STT for AudioGUI: {e}")
                         print("[ERROR] AudioGUI requires STT. Exiting.")

@@ -51,11 +51,12 @@ HTML_TEMPLATE = """
         }
         .header {
             background: #161b22;
-            padding: 12px 20px;
+            padding: 10px 20px;
             border-bottom: 1px solid #30363d;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            min-height: 70px;
         }
         .header h1 {
             font-size: 16px;
@@ -65,10 +66,58 @@ HTML_TEMPLATE = """
         .header-info {
             font-size: 11px;
             color: #8b949e;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            align-items: flex-end;
+            justify-content: center;
+        }
+        .memory-bar-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 220px;
+        }
+        .memory-label {
+            font-size: 10px;
+            color: #8b949e;
+            white-space: nowrap;
+        }
+        .memory-bar-wrapper {
+            flex: 1;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            height: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        .memory-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+            background: linear-gradient(90deg, #238636 0%, #2ea043 100%);
+        }
+        .memory-bar.warning {
+            background: linear-gradient(90deg, #f85149 0%, #ff6b6b 100%);
+        }
+        .memory-bar.moderate {
+            background: linear-gradient(90deg, #d29922 0%, #f1e05a 100%);
+        }
+        .memory-text {
+            font-size: 9px;
+            color: #c9d1d9;
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            font-weight: 600;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+            white-space: nowrap;
         }
         .container {
             display: flex;
-            height: calc(100vh - 45px);
+            height: calc(100vh - 70px);
         }
         .video-panel {
             flex: 1;
@@ -282,6 +331,20 @@ HTML_TEMPLATE = """
         <div class="header-info">
             <div>Device: <strong id="device-ip">Loading...</strong></div>
             <div id="current-time">Loading...</div>
+            <div class="memory-bar-container">
+                <span class="memory-label">GPU:</span>
+                <div class="memory-bar-wrapper">
+                    <div class="memory-bar" id="gpu-memory-bar" style="width: 0%"></div>
+                    <div class="memory-text" id="gpu-memory-text">0%</div>
+                </div>
+            </div>
+            <div class="memory-bar-container">
+                <span class="memory-label">RAM:</span>
+                <div class="memory-bar-wrapper">
+                    <div class="memory-bar" id="ram-memory-bar" style="width: 0%"></div>
+                    <div class="memory-text" id="ram-memory-text">0%</div>
+                </div>
+            </div>
         </div>
     </div>
     <div class="container">
@@ -337,6 +400,57 @@ HTML_TEMPLATE = """
             .then(data => {
                 document.getElementById('device-ip').textContent = data.ip;
             });
+
+        // Update memory usage every 2 seconds
+        function updateMemoryUsage() {
+            fetch('/memory_usage')
+                .then(r => {
+                    if (!r.ok) {
+                        throw new Error(`HTTP error! status: ${r.status}`);
+                    }
+                    return r.json();
+                })
+                .then(data => {
+                    // Update GPU memory
+                    if (data.gpu) {
+                        const gpuPercent = Math.round(data.gpu.percent);
+                        const gpuBar = document.getElementById('gpu-memory-bar');
+                        const gpuText = document.getElementById('gpu-memory-text');
+                        gpuBar.style.width = gpuPercent + '%';
+                        gpuText.textContent = `${gpuPercent}% (${data.gpu.used_gb.toFixed(1)}/${data.gpu.total_gb.toFixed(1)}GB)`;
+                        
+                        // Change color based on usage
+                        gpuBar.className = 'memory-bar';
+                        if (gpuPercent >= 85) {
+                            gpuBar.classList.add('warning');
+                        } else if (gpuPercent >= 70) {
+                            gpuBar.classList.add('moderate');
+                        }
+                    } else {
+                        document.getElementById('gpu-memory-text').textContent = 'N/A';
+                    }
+                    
+                    // Update RAM memory
+                    if (data.ram) {
+                        const ramPercent = Math.round(data.ram.percent);
+                        const ramBar = document.getElementById('ram-memory-bar');
+                        const ramText = document.getElementById('ram-memory-text');
+                        ramBar.style.width = ramPercent + '%';
+                        ramText.textContent = `${ramPercent}% (${data.ram.used_gb.toFixed(1)}/${data.ram.total_gb.toFixed(1)}GB)`;
+                        
+                        // Change color based on usage
+                        ramBar.className = 'memory-bar';
+                        if (ramPercent >= 85) {
+                            ramBar.classList.add('warning');
+                        } else if (ramPercent >= 70) {
+                            ramBar.classList.add('moderate');
+                        }
+                    }
+                })
+                .catch(err => console.error('Error fetching memory usage:', err));
+        }
+        setInterval(updateMemoryUsage, 2000); // Update every 2 seconds
+        updateMemoryUsage(); // Initial update
 
         // Update tracks every 500ms
         function updateTracks() {
@@ -572,6 +686,35 @@ class TrackingViewerJanChat:
         self.stt_running = False
         
         print(f"Loading YOLO model: {model_path}")
+        
+        # Clear GPU memory cache before loading model
+        try:
+            import torch
+            import gc
+            if torch.cuda.is_available():
+                # Clear Python garbage collector
+                gc.collect()
+                # Clear GPU cache
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                # Check available memory
+                props = torch.cuda.get_device_properties(0)
+                total_mem = props.total_memory / 1024**3
+                allocated = torch.cuda.memory_allocated(0) / 1024**3
+                cached = torch.cuda.memory_reserved(0) / 1024**3
+                available = total_mem - cached
+                print(f"[DEBUG] GPU memory - Total: {total_mem:.2f} GB, Allocated: {allocated:.2f} GB, Cached: {cached:.2f} GB, Available: {available:.2f} GB")
+                
+                # If less than 1GB available, try to free more
+                if available < 1.0:
+                    print(f"[WARNING] Low GPU memory ({available:.2f} GB). Attempting aggressive cleanup...")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        
+        # Load model - YOLO will automatically use GPU if available
         self.model = YOLO(model_path)
         
         # Verify model type
@@ -642,6 +785,66 @@ class TrackingViewerJanChat:
                 "ip": self.device_ip,
                 "device": f"/dev/video{self.device}"
             })
+        
+        @self.app.route('/memory_usage')
+        def memory_usage():
+            """Get system memory usage (RAM and GPU VRAM)."""
+            memory_data = {
+                "ram": None,
+                "gpu": None
+            }
+            
+            # Get RAM usage
+            try:
+                import psutil
+                ram = psutil.virtual_memory()
+                memory_data["ram"] = {
+                    "total_gb": ram.total / (1024**3),
+                    "used_gb": ram.used / (1024**3),
+                    "available_gb": ram.available / (1024**3),
+                    "percent": ram.percent
+                }
+            except ImportError:
+                # Fallback: try reading /proc/meminfo
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        meminfo = f.read()
+                        lines = meminfo.split('\n')
+                        mem_total = int([l for l in lines if 'MemTotal:' in l][0].split()[1]) * 1024
+                        mem_available = int([l for l in lines if 'MemAvailable:' in l][0].split()[1]) * 1024
+                        mem_used = mem_total - mem_available
+                        memory_data["ram"] = {
+                            "total_gb": mem_total / (1024**3),
+                            "used_gb": mem_used / (1024**3),
+                            "available_gb": mem_available / (1024**3),
+                            "percent": (mem_used / mem_total) * 100
+                        }
+                except:
+                    pass
+            
+            # Get GPU VRAM usage
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(0)
+                    reserved = torch.cuda.memory_reserved(0)
+                    total = torch.cuda.get_device_properties(0).total_memory
+                    
+                    # Use reserved memory as the actual usage (PyTorch caching)
+                    memory_data["gpu"] = {
+                        "total_gb": total / (1024**3),
+                        "allocated_gb": allocated / (1024**3),
+                        "reserved_gb": reserved / (1024**3),
+                        "used_gb": reserved / (1024**3),  # Show reserved as "used"
+                        "percent": (reserved / total) * 100 if total > 0 else 0
+                    }
+            except ImportError:
+                pass
+            except Exception as e:
+                # GPU check failed, leave as None
+                pass
+            
+            return jsonify(memory_data)
         
         @self.app.route('/stt_transcription')
         def get_stt_transcription():

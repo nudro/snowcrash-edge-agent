@@ -141,13 +141,72 @@ class SimpleAgent:
         if not model_file.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
         
-        return LlamaCpp(
+        # Check if CUDA is available for GPU offloading
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        except ImportError:
+            cuda_available = False
+            gpu_name = None
+            gpu_memory = None
+        
+        # GPU offloading: use -1 to offload all layers to GPU
+        # This is required even if llama-cpp-python is built with CUDA support
+        # Without this, models will still run on CPU even with CUDA build
+        n_gpu_layers = -1 if cuda_available else 0
+        
+        if cuda_available:
+            if self.verbose:
+                print(f"[INFO] GPU acceleration enabled: offloading all layers to GPU")
+                print(f"[INFO] GPU: {gpu_name}, Memory: {gpu_memory:.2f} GB")
+        else:
+            if self.verbose:
+                print(f"[WARNING] CUDA not available - SLM will run on CPU (slower)")
+        
+        # Enable verbose mode temporarily to see GPU offloading status
+        # llama.cpp will print layer offloading info if verbose=True
+        llm = LlamaCpp(
             model_path=str(model_path),
             temperature=temperature,
             n_ctx=2048,
             n_batch=512,
-            verbose=False,
+            n_gpu_layers=n_gpu_layers,  # Offload all layers to GPU when CUDA is available
+            verbose=True if self.verbose else False,  # Show GPU offloading info
         )
+        
+        # Verify GPU offloading after initialization
+        if cuda_available and self.verbose:
+            try:
+                import torch
+                # Check GPU memory before loading model
+                gpu_mem_before = torch.cuda.memory_allocated(0) / 1024**3
+                
+                # Check if llama.cpp actually detected GPU
+                if hasattr(llm.client, 'n_gpu_layers'):
+                    actual_gpu_layers = llm.client.n_gpu_layers
+                    if actual_gpu_layers > 0:
+                        print(f"[INFO] ✓ Confirmed: llama.cpp loaded {actual_gpu_layers} layers on GPU")
+                        # Verify GPU memory increased
+                        gpu_mem_after = torch.cuda.memory_allocated(0) / 1024**3
+                        if gpu_mem_after > gpu_mem_before:
+                            print(f"[INFO] ✓ GPU memory increased: {gpu_mem_after - gpu_mem_before:.2f} GB (model loaded on GPU)")
+                        else:
+                            print(f"[WARNING] GPU memory didn't increase - model may still be on CPU")
+                    else:
+                        print(f"[ERROR] ✗ llama.cpp reports 0 GPU layers - running on CPU!")
+                        print(f"[ERROR] ✗ llama-cpp-python was NOT built with CUDA support!")
+                        print(f"[ERROR] ✗ SLM will be VERY SLOW (5-10 seconds per response)")
+                        print(f"[FIX] Rebuild llama-cpp-python with CUDA:")
+                        print(f"[FIX]   CMAKE_ARGS='-DLLAMA_CUBLAS=on -DCMAKE_CUDA_ARCHITECTURES=87' pip install --force-reinstall --no-cache-dir llama-cpp-python")
+                        print(f"[FIX]   This will make SLM 10-20x faster!")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[WARNING] Could not verify GPU usage: {e}")
+        
+        return llm
     
     async def _should_use_tool(self, prompt: str) -> Optional[str]:
         """

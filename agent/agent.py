@@ -94,13 +94,37 @@ class SnowcrashAgent:
         if not model_file.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
         
+        # Check if CUDA is available for GPU offloading
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                gpu_name = torch.cuda.get_device_name(0)
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        except ImportError:
+            cuda_available = False
+            gpu_name = None
+            gpu_memory = None
+        
+        # GPU offloading: use -1 to offload all layers to GPU
+        # This is required even if llama-cpp-python is built with CUDA support
+        n_gpu_layers = -1 if cuda_available else 0
+        
+        if cuda_available:
+            if self.verbose:
+                print(f"[INFO] GPU acceleration enabled: offloading all layers to GPU")
+                print(f"[INFO] GPU: {gpu_name}, Memory: {gpu_memory:.2f} GB")
+        else:
+            if self.verbose:
+                print(f"[WARNING] CUDA not available - SLM will run on CPU (slower)")
+        
         return LlamaCpp(
             model_path=str(model_path),
             temperature=temperature,
             n_ctx=2048,  # Context window
             n_batch=512,  # Batch size
-            verbose=False,
-            n_gpu_layers=0,  # CPU only for now (can be configured)
+            verbose=self.verbose,
+            n_gpu_layers=n_gpu_layers,  # Offload all layers to GPU when CUDA is available
         )
     
     def _create_agent(self):
