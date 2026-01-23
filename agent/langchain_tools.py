@@ -16,6 +16,7 @@ from tools.statistics_tool import StatisticsTool
 from tools.distance_tool import DistanceTool
 from tools.tracking_tool import TrackingTool
 from tools.geographic_tool import GeographicTool
+from agent.remote_yolo_tool import remote_yolo_detection
 
 # Initialize MCP tools
 _yolo_tool = YOLODetectionTool()
@@ -198,6 +199,7 @@ def get_langchain_tools() -> list:
         get_detection_statistics,
         estimate_object_distances,
         track_objects,
-        estimate_object_geography
+        estimate_object_geography,
+        remote_yolo_detection  # Remote YOLO detection on old-nano
     ]
 

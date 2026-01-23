@@ -537,7 +537,7 @@ class TrackingViewerAudioGUI:
     
     def __init__(
         self,
-        model_path: str = "yolo26n-seg.pt",
+        model_path: str = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt",
         device: int = 0,
         confidence_threshold: float = 0.25,
         use_gstreamer: bool = True,
@@ -1030,7 +1030,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Web-based object tracking viewer with audio input visualization")
-    parser.add_argument("--model", type=str, default="yolo26n-seg.pt", help="YOLO model path")
+    parser.add_argument("--model", type=str, default="/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt", help="YOLO model path")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
     parser.add_argument("--confidence", type=float, default=0.25, help="Confidence threshold")
     parser.add_argument("--no-gstreamer", action="store_true", help="Disable GStreamer")

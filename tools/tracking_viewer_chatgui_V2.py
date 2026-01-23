@@ -115,94 +115,37 @@ HTML_TEMPLATE = """
             text-shadow: 0 1px 2px rgba(0,0,0,0.8);
             white-space: nowrap;
         }
-        .notification-banner {
-            background: #dc3545;
-            color: #fff;
-            padding: 12px 20px;
-            text-align: center;
-            font-weight: 600;
-            font-size: 14px;
-            display: none;
-            z-index: 1000;
-            position: relative;
-        }
-        .notification-banner.show {
-            display: block;
-        }
         .container {
             display: flex;
-            flex-direction: column;
             height: calc(100vh - 70px);
-        }
-        .tracks-top {
-            flex: 0 0 120px;
-            overflow-x: auto;
-            overflow-y: hidden;
-            white-space: nowrap;
-            padding: 12px;
-            border-bottom: 1px solid #30363d;
-            background: #161b22;
-        }
-        .tracks-top h2 {
-            font-size: 13px;
-            margin-bottom: 8px;
-            color: #58a6ff;
-            font-weight: 600;
-        }
-        .tracks-top-container {
-            display: flex;
-            gap: 8px;
-        }
-        .main-content {
-            flex: 1;
-            display: flex;
-            overflow: hidden;
-        }
-        .video-panels {
-            flex: 0 0 50%;
-            display: flex;
-            flex-direction: column;
-            border-right: 1px solid #30363d;
         }
         .video-panel {
             flex: 1;
             background: #000;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
             position: relative;
-            border-bottom: 1px solid #30363d;
-        }
-        .video-panel:last-child {
-            border-bottom: none;
-        }
-        .video-panel-label {
-            position: absolute;
-            top: 8px;
-            left: 8px;
-            background: rgba(0, 0, 0, 0.7);
-            color: #fff;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-            z-index: 10;
+            border-right: 1px solid #30363d;
         }
         .video-panel img {
-            width: 100%;
-            height: 100%;
+            max-width: 100%;
+            max-height: 100%;
             object-fit: contain;
         }
         .sidebar {
-            flex: 0 0 50%;
+            width: 550px;
             display: flex;
             flex-direction: column;
             background: #161b22;
             border-left: 1px solid #30363d;
         }
         .tracks-panel {
-            display: none; /* Tracks now at top */
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            border-bottom: 1px solid #30363d;
+            max-height: 50%;
         }
         .tracks-panel h2 {
             font-size: 13px;
@@ -247,6 +190,7 @@ HTML_TEMPLATE = """
             flex: 1;
             display: flex;
             flex-direction: column;
+            min-height: 50%;
             background: #0d1117;
         }
         .chat-panel h2 {
@@ -263,96 +207,106 @@ HTML_TEMPLATE = """
             padding: 12px;
             display: flex;
             flex-direction: column;
+            gap: 12px;
+        }
+        .chat-message {
+            display: flex;
+            flex-direction: column;
             gap: 4px;
         }
-        .terminal-output {
-            font-family: 'Courier New', monospace;
+        .message-header {
+            font-size: 11px;
+            font-weight: 600;
+            color: #58a6ff;
+        }
+        .message-content {
+            padding: 8px 12px;
+            border-radius: 6px;
             font-size: 13px;
-            color: #00ff00;
-            white-space: pre-wrap;
-            word-break: break-word;
-            padding: 4px 0;
+            line-height: 1.5;
+            color: #c9d1d9;
         }
-        .terminal-user-input {
-            color: #58a6ff;
+        .message-user .message-content {
+            background: #21262d;
+            border: 1px solid #30363d;
         }
-        .terminal-prompt {
-            color: #58a6ff;
-            margin-right: 5px;
+        .message-assistant .message-content {
+            background: #161b22;
+            border: 1px solid #30363d;
         }
-        .terminal-agent-call {
-            color: #ffa500;
-            font-weight: bold;
-        }
-        .terminal-confidence {
-            color: #00ffff;
-        }
-        .terminal-error {
-            color: #ff0000;
-            font-weight: bold;
-        }
-        .big-buttons {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            gap: 8px;
-            padding: 12px;
+        .quick-prompts {
+            padding: 8px 12px;
             border-top: 1px solid #30363d;
             background: #0d1117;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            max-height: 120px;
+            overflow-y: auto;
         }
-        .big-button {
+        .quick-prompt-btn {
             background: #1f2937;
             border: 1px solid #374151;
-            border-radius: 8px;
-            padding: 15px 10px;
+            border-radius: 4px;
+            padding: 4px 8px;
             color: #9ca3af;
-            font-size: 12px;
-            font-weight: 600;
+            font-size: 10px;
+            font-weight: 500;
             cursor: pointer;
             transition: all 0.2s;
+            font-family: 'Courier New', monospace;
             text-transform: uppercase;
-            letter-spacing: 0.8px;
-            text-align: center;
+            letter-spacing: 0.5px;
         }
-        .big-button:hover {
+        .quick-prompt-btn:hover {
             background: #374151;
             border-color: #58a6ff;
             color: #58a6ff;
         }
-        .big-button:active {
+        .quick-prompt-btn:active {
             background: #1e40af;
         }
         .chat-input-container {
-            padding: 12px;
+            padding: 20px 16px;
+            margin-top: 16px;
             border-top: 1px solid #30363d;
             background: #161b22;
+            flex-shrink: 0;
         }
         .chat-input-form {
             display: flex;
-            gap: 8px;
+            gap: 12px;
+            align-items: center;
         }
         .chat-input {
             flex: 1;
             background: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 8px 12px;
+            border: 2px solid #30363d;
+            border-radius: 8px;
+            padding: 16px 18px;
             color: #c9d1d9;
-            font-size: 13px;
+            font-size: 16px;
             font-family: inherit;
+            min-height: 24px;
+            line-height: 1.5;
         }
         .chat-input:focus {
             outline: none;
             border-color: #58a6ff;
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
         }
         .chat-send {
             background: #238636;
             border: none;
-            border-radius: 6px;
-            padding: 8px 16px;
+            border-radius: 8px;
+            padding: 16px 24px;
             color: #fff;
-            font-size: 13px;
+            font-size: 16px;
             font-weight: 600;
             cursor: pointer;
+            min-height: 56px;
+            white-space: nowrap;
+            transition: background 0.2s;
         }
         .chat-send:hover {
             background: #2ea043;
@@ -387,6 +341,13 @@ HTML_TEMPLATE = """
             <div>Device: <strong id="device-ip">Loading...</strong></div>
             <div id="current-time">Loading...</div>
             <div class="memory-bar-container">
+                <span class="memory-label">SWAP:</span>
+                <div class="memory-bar-wrapper">
+                    <div class="memory-bar" id="swap-memory-bar" style="width: 0%"></div>
+                    <div class="memory-text" id="swap-memory-text">0%</div>
+                </div>
+            </div>
+            <div class="memory-bar-container">
                 <span class="memory-label">MEM:</span>
                 <div class="memory-bar-wrapper">
                     <div class="memory-bar" id="ram-memory-bar" style="width: 0%"></div>
@@ -395,57 +356,39 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-    <div class="notification-banner" id="person-alert-banner">
-        🚨 ALERT: PERSON DETECTED ON OLD-NANO! 🚨
-    </div>
     <div class="container">
-        <div class="tracks-top">
-            <h2>Active Tracks</h2>
-            <div class="tracks-top-container" id="tracks-container">
-                <div class="no-tracks">No tracks detected yet...</div>
-            </div>
+        <div class="video-panel">
+            <img id="video-stream" src="/video_feed" alt="Video Stream">
         </div>
-        <div class="main-content">
-            <div class="video-panels">
-                <div class="video-panel">
-                    <div class="video-panel-label">Orin-Nano (Local)</div>
-                    <img id="video-stream" src="/video_feed" alt="Orin-Nano Video Stream">
-                </div>
-                <div class="video-panel">
-                    <div class="video-panel-label">Old-Nano (Remote)</div>
-                    <img id="old-nano-video-stream" src="" alt="Old-Nano Video Stream">
-                    <div id="old-nano-status" style="color: #8b949e; padding: 20px; text-align: center; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5;">
-                        Connecting to old-nano...
-                    </div>
+        <div class="sidebar">
+            <div class="tracks-panel">
+                <h2>Active Tracks</h2>
+                <div class="tracks-container" id="tracks-container">
+                    <div class="no-tracks">No tracks detected yet...</div>
                 </div>
             </div>
-            <div class="sidebar">
-                <div class="chat-panel">
-                    <h2>Terminal Output</h2>
-                    <div class="chat-messages" id="chat-messages">
-                        <div class="terminal-output"><span class="terminal-prompt">$</span> <span class="terminal-user-input">Welcome to Snowcrash Agent Terminal.</span></div>
-                        <div class="terminal-output"><span class="terminal-agent-call">[AGENT]</span> Ready for commands.</div>
+            <div class="chat-panel">
+                <h2>Chat</h2>
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-message message-assistant">
+                        <div class="message-header">Assistant</div>
+                        <div class="message-content">Ask the Snowcrash Agent</div>
                     </div>
-                    <div class="big-buttons">
-                        <button class="big-button" onclick="sendQuickPrompt('detect objects')">DETECT OBJECTS</button>
-                        <button class="big-button" onclick="sendQuickPrompt('get detection statistics')">STATISTICS</button>
-                        <button class="big-button" onclick="sendQuickPrompt('estimate object distances')">DISTANCE</button>
-                        <button class="big-button" onclick="sendQuickPrompt('track objects')">TRACK</button>
-                        <button class="big-button" onclick="sendQuickPrompt('detect colors')">COLOR INTEL</button>
-                        <button class="big-button" onclick="sendQuickPrompt('detect movement')">MOVEMENT</button>
-                        <button class="big-button" onclick="sendQuickPrompt('estimate speed')">SPEED</button>
-                        <button class="big-button" onclick="sendQuickPrompt('environment scan')">ENVIRONMENT</button>
-                        <button class="big-button" onclick="sendQuickPrompt('spatial relationships')">SPATIAL</button>
-                        <button class="big-button" id="person-watch-btn" onclick="togglePersonWatch()">PERSON WATCH</button>
-                        <button class="big-button" id="stop-watch-btn" onclick="stopPersonWatch()" style="display:none; background: #dc3545;">STOP WATCH</button>
-                    </div>
-                    <div class="chat-input-container">
-                        <form class="chat-input-form" id="chat-form" onsubmit="sendMessage(event)">
-                            <span class="terminal-prompt">$</span>
-                            <input type="text" class="chat-input" id="chat-input" placeholder="Type your command..." autocomplete="off">
-                            <button type="submit" class="chat-send" id="chat-send">Send</button>
-                        </form>
-                    </div>
+                </div>
+                <div class="quick-prompts">
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Status Check')">STATUS CHECK</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Target Count')">TARGET COUNT</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Distance Report')">DISTANCE REPORT</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Position Update')">POSITION UPDATE</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Color Intel')">COLOR INTEL</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Hazard')">HAZARD</button>
+                    <button class="quick-prompt-btn" onclick="sendQuickPrompt('Environment Scan')">ENVIRONMENT SCAN</button>
+                </div>
+                <div class="chat-input-container">
+                    <form class="chat-input-form" id="chat-form" onsubmit="sendMessage(event)">
+                        <input type="text" class="chat-input" id="chat-input" placeholder="Type your message..." autocomplete="off">
+                        <button type="submit" class="chat-send" id="chat-send">Send</button>
+                    </form>
                 </div>
             </div>
         </div>
@@ -462,22 +405,9 @@ HTML_TEMPLATE = """
 
         // Update device IP
         fetch('/device_info')
-            .then(r => {
-                if (!r.ok) throw new Error('HTTP error! status: ' + r.status);
-                return r.json();
-            })
+            .then(r => r.json())
             .then(data => {
-                const deviceIpEl = document.getElementById('device-ip');
-                if (deviceIpEl && data && data.ip) {
-                    deviceIpEl.textContent = data.ip;
-                } else if (deviceIpEl) {
-                    deviceIpEl.textContent = 'Unknown';
-                }
-            })
-            .catch(err => {
-                console.error('Error fetching device info:', err);
-                const deviceIpEl = document.getElementById('device-ip');
-                if (deviceIpEl) deviceIpEl.textContent = 'Error';
+                document.getElementById('device-ip').textContent = data.ip;
             });
 
         // Update memory usage every 2 seconds
@@ -485,12 +415,31 @@ HTML_TEMPLATE = """
             fetch('/memory_usage')
                 .then(r => {
                     if (!r.ok) {
-                        throw new Error(`HTTP error! status: ${r.status}`);
+                        throw new Error('HTTP error! status: ' + r.status);
                     }
                     return r.json();
                 })
                 .then(data => {
-                    // Update RAM memory (MEM bar - GPU removed)
+                    // Update SWAP memory
+                    if (data.swap) {
+                        const swapPercent = Math.round(data.swap.percent);
+                        const swapBar = document.getElementById('swap-memory-bar');
+                        const swapText = document.getElementById('swap-memory-text');
+                        swapBar.style.width = swapPercent + '%';
+                        swapText.textContent = swapPercent + '% (' + data.swap.used_gb.toFixed(1) + '/' + data.swap.total_gb.toFixed(1) + 'GB)';
+                        
+                        // Change color based on usage
+                        swapBar.className = 'memory-bar';
+                        if (swapPercent >= 85) {
+                            swapBar.classList.add('warning');
+                        } else if (swapPercent >= 70) {
+                            swapBar.classList.add('moderate');
+                        }
+                    } else {
+                        document.getElementById('swap-memory-text').textContent = 'N/A';
+                    }
+                    
+                    // Update RAM memory (labeled as MEM)
                     if (data.ram) {
                         const ramPercent = Math.round(data.ram.percent);
                         const ramBar = document.getElementById('ram-memory-bar');
@@ -512,103 +461,7 @@ HTML_TEMPLATE = """
         setInterval(updateMemoryUsage, 2000); // Update every 2 seconds
         updateMemoryUsage(); // Initial update
 
-        // Connect to old-nano video stream
-        const oldNanoVideoStream = document.getElementById('old-nano-video-stream');
-        const oldNanoStatus = document.getElementById('old-nano-status');
-        const oldNanoHost = '__OLD_NANO_HOST__';
-        
-        function connectOldNanoStream() {
-            const isConfigured = oldNanoHost && oldNanoHost.trim() !== '' && oldNanoHost !== '__OLD_NANO_HOST__';
-            
-            if (isConfigured) {
-                const videoUrl = 'http://' + oldNanoHost + ':9000/video_feed';
-                console.log('[GUI] Connecting to old-nano video: ' + videoUrl);
-                
-                if (oldNanoVideoStream) {
-                    oldNanoVideoStream.src = videoUrl;
-                    oldNanoVideoStream.style.display = 'block';
-                    
-                    oldNanoVideoStream.onload = function() {
-                        if (oldNanoStatus) {
-                            oldNanoStatus.style.display = 'none';
-                        }
-                        console.log('[GUI] Old-nano video stream connected');
-                    };
-                    
-                    oldNanoVideoStream.onerror = function() {
-                        if (oldNanoStatus) {
-                            oldNanoStatus.textContent = 'Failed to connect to old-nano at ' + oldNanoHost + ':9000\nCheck if service is running';
-                            oldNanoStatus.style.color = '#f85149';
-                            oldNanoStatus.style.display = 'block';
-                        }
-                        console.error('[GUI] Failed to load old-nano video from ' + videoUrl);
-                        setTimeout(connectOldNanoStream, 5000);
-                    };
-                }
-            } else {
-                if (oldNanoStatus) {
-                    oldNanoStatus.textContent = 'old-nano host not configured';
-                    oldNanoStatus.style.color = '#8b949e';
-                }
-            }
-        }
-        connectOldNanoStream();
-        
-        // Poll for person detection status
-        const personAlertBanner = document.getElementById('person-alert-banner');
-        function checkPersonDetection() {
-            if (!oldNanoHost || oldNanoHost === '__OLD_NANO_HOST__') return;
-            fetch('http://' + oldNanoHost + ':9000/watch_status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.person_detected) {
-                        personAlertBanner.classList.add('show');
-                        setTimeout(() => {
-                            personAlertBanner.classList.remove('show');
-                        }, 10000);
-                    }
-                })
-                .catch(err => {});
-        }
-        setInterval(checkPersonDetection, 1000);
-        
-        // Person watch functions
-        let personWatchActive = false;
-        function togglePersonWatch() {
-            if (personWatchActive) return;
-            personWatchActive = true;
-            document.getElementById('person-watch-btn').style.display = 'none';
-            document.getElementById('stop-watch-btn').style.display = 'block';
-            
-            fetch('/watch_person', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}) })
-                .then(r => r.json())
-                .then(data => {
-                    if (!data.success) {
-                        alert('Failed to start person watch: ' + (data.error || 'Unknown error'));
-                        personWatchActive = false;
-                        document.getElementById('person-watch-btn').style.display = 'block';
-                        document.getElementById('stop-watch-btn').style.display = 'none';
-                    }
-                })
-                .catch(err => {
-                    alert('Error starting person watch: ' + err.message);
-                    personWatchActive = false;
-                    document.getElementById('person-watch-btn').style.display = 'block';
-                    document.getElementById('stop-watch-btn').style.display = 'none';
-                });
-        }
-        
-        function stopPersonWatch() {
-            personWatchActive = false;
-            document.getElementById('person-watch-btn').style.display = 'block';
-            document.getElementById('stop-watch-btn').style.display = 'none';
-            
-            fetch('/stop_watch', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}) })
-                .then(r => r.json())
-                .catch(err => console.error('Error stopping watch:', err));
-        }
-        
-        // Update tracks every 500ms (now in top panel)
+        // Update tracks every 500ms
         function updateTracks() {
             fetch('/tracks')
                 .then(r => r.json())
@@ -640,7 +493,7 @@ HTML_TEMPLATE = """
                         const trackId = String(track.track_id || '?');
                         const trackClass = String(track.class || 'unknown');
                         
-                        return '<div class="track-item" style="display: inline-block; min-width: 200px; max-width: 250px; vertical-align: top; margin-right: 8px;">' +
+                        return '<div class="track-item">' +
                             '<div class="track-id">Track ID: ' + trackId + '</div>' +
                             '<div class="field"><strong>Class:</strong> ' + trackClass + '</div>' +
                             '<div class="field"><strong>Velocity:</strong> vx=' + vx + ', vy=' + vy + ' px/s</div>' +
@@ -689,93 +542,45 @@ HTML_TEMPLATE = """
                 }
             });
 
-        // Terminal-style output functions
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        function formatTerminalResponse(text) {
-            if (!text) return '';
-            // First escape HTML to prevent XSS
-            let safeText = escapeHtml(String(text));
-            // Highlight confidence scores in cyan
-            safeText = safeText.replace(/(\d+\.\d+%|\d+%)/g, '<span class="terminal-confidence">$1</span>');
-            // Highlight [AGENT] prefix
-            safeText = safeText.replace(/\[AGENT\]/g, '<span class="terminal-agent-call">[AGENT]</span>');
-            // Highlight errors
-            safeText = safeText.replace(/ERROR:/gi, '<span class="terminal-error">ERROR:</span>');
-            // Convert newlines to <br>
-            safeText = safeText.replace(/\n/g, '<br>');
-            return safeText;
-        }
-        
-        function addTerminalOutput(text, isUser = false) {
-            const messagesContainer = document.getElementById('chat-messages');
-            const outputDiv = document.createElement('div');
-            outputDiv.className = 'terminal-output';
+        // Quick prompt functionality
+        function sendQuickPrompt(promptType) {
+            const promptMap = {
+                'Status Check': "What's the current situation?",
+                'Target Count': "How many objects detected?",
+                'Distance Report': "Distances to all targets",
+                'Position Update': "Positions of all objects",
+                'Color Intel': "Color identification of targets",
+                'Hazard': "Are there any hazards in the frame?",
+                'Environment Scan': "Based on the objects in the video, what kind of environment is this?"
+            };
             
-            if (isUser) {
-                outputDiv.innerHTML = '<span class="terminal-prompt">$</span> <span class="terminal-user-input">' + escapeHtml(text) + '</span>';
-            } else {
-                outputDiv.innerHTML = formatTerminalResponse(text);
-            }
-            
-            messagesContainer.appendChild(outputDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-        
-        // Quick prompt functionality - sends directly
-        function sendQuickPrompt(prompt) {
-            console.log('[GUI] Button clicked:', prompt);
-            
+            const prompt = promptMap[promptType] || promptType;
             const input = document.getElementById('chat-input');
             input.value = prompt;
             
-            addTerminalOutput(prompt, true);
-            input.value = '';
-            
-            const sendBtn = document.getElementById('chat-send');
-            sendBtn.disabled = true;
-            
+            // Trigger send
+            const event = new Event('submit', { bubbles: true, cancelable: true });
+            document.getElementById('chat-form').dispatchEvent(event);
+        }
+        
+        // Chat functionality
+        function addMessage(role, content) {
             const messagesContainer = document.getElementById('chat-messages');
-            const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'terminal-output';
-            loadingDiv.id = 'chat-loading';
-            loadingDiv.innerHTML = '<span class="terminal-agent-call">[AGENT]</span> Processing...';
-            messagesContainer.appendChild(loadingDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'chat-message message-' + role;
             
-            fetch('/chat', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ message: prompt })
-            })
-            .then(r => {
-                if (!r.ok) throw new Error('HTTP error! status: ' + r.status);
-                return r.json();
-            })
-            .then(data => {
-                const loading = document.getElementById('chat-loading');
-                if (loading) loading.remove();
-                
-                if (data.response) {
-                    addTerminalOutput(data.response, false);
-                } else if (data.error) {
-                    addTerminalOutput('<span class="terminal-error">ERROR:</span> ' + escapeHtml(data.error), false);
-                }
-                
-                sendBtn.disabled = false;
-                input.focus();
-            })
-            .catch(err => {
-                console.error('[GUI] Error sending message:', err);
-                const loading = document.getElementById('chat-loading');
-                if (loading) loading.remove();
-                addTerminalOutput('<span class="terminal-error">ERROR:</span> Failed to send message. ' + escapeHtml(err.message), false);
-                sendBtn.disabled = false;
-            });
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.textContent = role === 'user' ? 'You' : 'Assistant';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = content;
+            
+            messageDiv.appendChild(header);
+            messageDiv.appendChild(contentDiv);
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
         function sendMessage(event) {
@@ -785,37 +590,42 @@ HTML_TEMPLATE = """
             
             if (!message) return;
             
-            addTerminalOutput(message, true);
+            // Add user message
+            addMessage('user', message);
             input.value = '';
             
+            // Disable send button
             const sendBtn = document.getElementById('chat-send');
             sendBtn.disabled = true;
             
+            // Show loading
             const messagesContainer = document.getElementById('chat-messages');
             const loadingDiv = document.createElement('div');
-            loadingDiv.className = 'terminal-output';
+            loadingDiv.className = 'chat-loading';
             loadingDiv.id = 'chat-loading';
-            loadingDiv.innerHTML = '<span class="terminal-agent-call">[AGENT]</span> Processing...';
+            loadingDiv.textContent = 'Thinking...';
             messagesContainer.appendChild(loadingDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             
+            // Send to server
             fetch('/chat', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({ message: message })
             })
-            .then(r => {
-                if (!r.ok) throw new Error('HTTP error! status: ' + r.status);
-                return r.json();
-            })
+            .then(r => r.json())
             .then(data => {
+                // Remove loading
                 const loading = document.getElementById('chat-loading');
                 if (loading) loading.remove();
                 
+                // Add assistant response
                 if (data.response) {
-                    addTerminalOutput(data.response, false);
+                    addMessage('assistant', data.response);
                 } else if (data.error) {
-                    addTerminalOutput('<span class="terminal-error">ERROR:</span> ' + escapeHtml(data.error), false);
+                    addMessage('assistant', 'Error: ' + data.error);
                 }
                 
                 sendBtn.disabled = false;
@@ -824,7 +634,7 @@ HTML_TEMPLATE = """
             .catch(err => {
                 const loading = document.getElementById('chat-loading');
                 if (loading) loading.remove();
-                addTerminalOutput('<span class="terminal-error">ERROR:</span> Failed to send message. ' + escapeHtml(err.message), false);
+                addMessage('assistant', 'Error: Failed to send message. ' + err.message);
                 sendBtn.disabled = false;
             });
         }
@@ -855,13 +665,12 @@ class TrackingViewerJanChat:
         device: int = 0,
         confidence_threshold: float = 0.25,
         use_gstreamer: bool = True,
-        port: int = 8083,
+        port: int = 8080,
         agent = None,  # SimpleAgent instance (shared LLM - no extra memory)
         stt_model = None,  # ParakeetSTT or WhisperModel instance (optional)
         stt_enabled: bool = False,  # Enable STT audio input
         stt_card: int = 1,  # ALSA card number for USB microphone
-        stt_chunk_duration: float = 3.0,  # Audio chunk duration for STT
-        old_nano_host: str = "old-nano"  # Hostname or IP of old-nano YOLO service
+        stt_chunk_duration: float = 3.0  # Audio chunk duration for STT
     ):
         if YOLO is None:
             raise RuntimeError("ultralytics not installed. Install with: pip install ultralytics")
@@ -878,7 +687,6 @@ class TrackingViewerJanChat:
         self.stt_enabled = stt_enabled
         self.stt_card = stt_card
         self.stt_chunk_duration = stt_chunk_duration
-        self.old_nano_host = old_nano_host  # Hostname or IP of old-nano
         
         # STT transcription queue (thread-safe, memory-efficient)
         # Stores transcriptions from background STT thread
@@ -906,25 +714,50 @@ class TrackingViewerJanChat:
                 available = total_mem - cached
                 print(f"[DEBUG] GPU memory - Total: {total_mem:.2f} GB, Allocated: {allocated:.2f} GB, Cached: {cached:.2f} GB, Available: {available:.2f} GB")
                 
-                # If less than 1GB available, try to free more
-                if available < 1.0:
-                    print(f"[WARNING] Low GPU memory ({available:.2f} GB). Attempting aggressive cleanup...")
+                # With 8GB VRAM, llama.cpp using ~340MB leaves ~7.6GB for YOLO
+                # PyTorch memory check doesn't account for llama.cpp's direct CUDA allocations
+                # So let YOLO try GPU first, catch OOM error if it happens, then fallback to CPU
+                print(f"[INFO] GPU memory available (PyTorch view): {available:.2f} GB")
+                print(f"[INFO] Note: llama.cpp uses CUDA directly (~340MB), PyTorch may not see this allocation")
+                print(f"[INFO] Attempting to load YOLO on GPU first (will fallback to CPU if OOM)")
+                device_str = None  # Let YOLO try GPU first
+                # Try to free any PyTorch caches
+                if available < 2.0:
+                    print(f"[WARNING] Limited GPU memory from PyTorch's perspective. Cleaning caches...")
                     torch.cuda.empty_cache()
                     gc.collect()
                     torch.cuda.empty_cache()
+            else:
+                device_str = 'cpu'  # CUDA not available
         except ImportError:
-            pass
+            device_str = None  # Let YOLO auto-detect
         
-        # Load model - auto-detect TensorRT (.engine) or PyTorch (.pt) format
-        from tools.yolo_utils import load_yolo_model
-        self.model = load_yolo_model(model_path, verbose=True)
-        
-        # Check if TensorRT engine exists
-        from pathlib import Path
-        engine_path = Path(model_path).with_suffix('.engine')
-        self.is_tensorrt_engine = engine_path.exists()
-        if self.is_tensorrt_engine:
-            print(f"[INFO] TensorRT engine detected, will use imgsz=640")
+        # Load model - try GPU first, fallback to CPU on OOM
+        # With 8GB VRAM, YOLO should have plenty of space even with llama.cpp
+        try:
+            self.model = YOLO(model_path)
+            # Verify device assignment
+            try:
+                if hasattr(self.model, 'device'):
+                    print(f"[INFO] YOLO device: {self.model.device}")
+                elif hasattr(self.model, 'model') and hasattr(self.model.model, 'device'):
+                    print(f"[INFO] YOLO model device: {self.model.model.device}")
+            except:
+                pass
+        except RuntimeError as e:
+            # If GPU OOM during model loading, fallback to CPU
+            if 'out of memory' in str(e).lower() or 'cuda' in str(e).lower():
+                print(f"[WARNING] GPU OOM during YOLO model load: {e}")
+                print(f"[INFO] Falling back to CPU for YOLO...")
+                # Force CPU
+                self.model = YOLO(model_path)
+                if hasattr(self.model, 'model') and hasattr(self.model.model, 'to'):
+                    self.model.model.to('cpu')
+                if hasattr(self.model, 'predictor') and hasattr(self.model.predictor, 'device'):
+                    self.model.predictor.device = 'cpu'
+                print(f"[INFO] YOLO loaded on CPU")
+            else:
+                raise
         
         # Verify model type
         if hasattr(self.model, 'task'):
@@ -971,9 +804,7 @@ class TrackingViewerJanChat:
         
         @self.app.route('/')
         def index():
-            # Inject old-nano host into template (use non-Jinja2 placeholder to avoid syntax errors)
-            template = HTML_TEMPLATE.replace('__OLD_NANO_HOST__', self.old_nano_host)
-            return render_template_string(template)
+            return render_template_string(HTML_TEMPLATE)
         
         @self.app.route('/video_feed')
         def video_feed():
@@ -1005,10 +836,10 @@ class TrackingViewerJanChat:
         
         @self.app.route('/memory_usage')
         def memory_usage():
-            """Get system memory usage (RAM and GPU VRAM)."""
+            """Get system memory usage (RAM and SWAP)."""
             memory_data = {
                 "ram": None,
-                "gpu": None
+                "swap": None
             }
             
             # Get RAM usage
@@ -1039,26 +870,36 @@ class TrackingViewerJanChat:
                 except:
                     pass
             
-            # Get GPU VRAM usage
+            # Get SWAP usage
             try:
-                import torch
-                if torch.cuda.is_available():
-                    allocated = torch.cuda.memory_allocated(0)
-                    reserved = torch.cuda.memory_reserved(0)
-                    total = torch.cuda.get_device_properties(0).total_memory
-                    
-                    # Use reserved memory as the actual usage (PyTorch caching)
-                    memory_data["gpu"] = {
-                        "total_gb": total / (1024**3),
-                        "allocated_gb": allocated / (1024**3),
-                        "reserved_gb": reserved / (1024**3),
-                        "used_gb": reserved / (1024**3),  # Show reserved as "used"
-                        "percent": (reserved / total) * 100 if total > 0 else 0
-                    }
+                import psutil
+                swap = psutil.swap_memory()
+                memory_data["swap"] = {
+                    "total_gb": swap.total / (1024**3),
+                    "used_gb": swap.used / (1024**3),
+                    "free_gb": swap.free / (1024**3),
+                    "percent": swap.percent
+                }
             except ImportError:
-                pass
+                # Fallback: try reading /proc/meminfo
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        meminfo = f.read()
+                        lines = meminfo.split('\n')
+                        swap_total = int([l for l in lines if 'SwapTotal:' in l][0].split()[1]) * 1024
+                        swap_free = int([l for l in lines if 'SwapFree:' in l][0].split()[1]) * 1024
+                        swap_used = swap_total - swap_free
+                        if swap_total > 0:
+                            memory_data["swap"] = {
+                                "total_gb": swap_total / (1024**3),
+                                "used_gb": swap_used / (1024**3),
+                                "free_gb": swap_free / (1024**3),
+                                "percent": (swap_used / swap_total) * 100
+                            }
+                except:
+                    pass
             except Exception as e:
-                # GPU check failed, leave as None
+                # SWAP check failed, leave as None
                 pass
             
             return jsonify(memory_data)
@@ -1105,82 +946,112 @@ class TrackingViewerJanChat:
                 elif not hasattr(self.agent, 'web_viewer'):
                     self.agent.web_viewer = self
                 
-                # Use agent to generate response (reuses LLM - no extra memory)
-                if hasattr(self.agent, 'run_sync'):
-                    response = self.agent.run_sync(message)
-                elif hasattr(self.agent, 'run'):
-                    # Async version - run in sync mode
+                # Special handling for STATUS CHECK: Combine HAZARD + ENVIRONMENT SCAN
+                is_status_check = message.lower() in ["what's the current situation?", "what is the current situation?"]
+                
+                if is_status_check:
+                    # Run HAZARD detection and ENVIRONMENT SCAN, then combine results
                     import asyncio
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
-                        response = loop.run_until_complete(self.agent.run(message))
+                        # Run HAZARD detection
+                        hazard_prompt = "Are there any hazards in the frame?"
+                        hazard_response = loop.run_until_complete(self.agent.run(hazard_prompt))
+                        
+                        # Run ENVIRONMENT SCAN
+                        env_prompt = "Based on the objects in the video, what kind of environment is this?"
+                        env_response = loop.run_until_complete(self.agent.run(env_prompt))
+                        
+                        # Combine results using Response Formatting Template persona
+                        from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                        
+                        # Format combined response using the tactical persona
+                        combined_tool_results = f"HAZARD: {hazard_response}\nENVIRONMENT: {env_response}"
+                        
+                        # Use LLM to format combined response in tactical style (max 20 words)
+                        if hasattr(self.agent, 'llm'):
+                            formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                user_query=message,
+                                tool_results=combined_tool_results
+                            )
+                            
+                            # Extract system and user messages
+                            system_msg = None
+                            user_msg = None
+                            for msg in formatting_prompt:
+                                if msg.type == "system":
+                                    system_msg = msg.content
+                                elif msg.type == "human":
+                                    user_msg = msg.content
+                            
+                            # Call LLM to format response
+                            if hasattr(self.agent.llm, '_acall'):
+                                formatted_response = loop.run_until_complete(
+                                    self.agent.llm._acall(user_msg, system_prompt=system_msg)
+                                )
+                            else:
+                                formatted_response = loop.run_until_complete(
+                                    asyncio.to_thread(self.agent.llm.invoke, formatting_prompt)
+                                )
+                                if not isinstance(formatted_response, str):
+                                    formatted_response = formatted_response.content if hasattr(formatted_response, 'content') else str(formatted_response)
+                            
+                            response = formatted_response.strip()
+                        else:
+                            # Fallback: simple combination
+                            response = f"{hazard_response} {env_response}"
                     finally:
                         loop.close()
                 else:
-                    return jsonify({"error": "Agent does not support run_sync or run methods"}), 500
+                    # Normal message handling
+                    if hasattr(self.agent, 'run_sync'):
+                        response = self.agent.run_sync(message)
+                    elif hasattr(self.agent, 'run'):
+                        # Async version - run in sync mode
+                        import asyncio
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            response = loop.run_until_complete(self.agent.run(message))
+                        finally:
+                            loop.close()
+                    else:
+                        return jsonify({"error": "Agent does not support run_sync or run methods"}), 500
                 
-                # Format response with [AGENT] prefix for terminal-style output
+                # Format response as human-readable sentence (like Response Formatting Template)
+                # The agent should already format responses, but ensure it's a proper sentence
                 if response is None:
                     response = "No response generated."
                 elif not isinstance(response, str):
                     response = str(response)
                 
-                # Add [AGENT] prefix to each line if not already present
-                lines = response.split('\n')
-                formatted_lines = []
-                for line in lines:
-                    if line.strip() and not line.strip().startswith('[AGENT]'):
-                        formatted_lines.append(f"[AGENT] {line}")
-                    else:
-                        formatted_lines.append(line)
+                # Clean up response - remove [AGENT] prefix if present
+                response = response.strip()
+                if response.startswith('[AGENT]'):
+                    response = response[7:].strip()
                 
-                formatted_response = '\n'.join(formatted_lines)
+                # Ensure it's formatted as a natural human sentence
+                if response:
+                    # Ensure it starts with a capital letter
+                    if response and not response[0].isupper():
+                        response = response[0].upper() + response[1:]
+                    
+                    # Ensure it ends with punctuation
+                    if not response.endswith(('.', '!', '?', ':')):
+                        response = response + '.'
+                    
+                    # Remove any double punctuation
+                    while response.endswith('..'):
+                        response = response[:-1]
                 
-                return jsonify({"response": formatted_response})
+                return jsonify({"response": response})
                 
             except Exception as e:
                 print(f"[ERROR] Chat error: {e}")
                 import traceback
                 traceback.print_exc()
                 return jsonify({"error": str(e)}), 500
-        
-        @self.app.route('/watch_person', methods=['POST'])
-        def watch_person():
-            """Start continuous person detection on old-nano."""
-            try:
-                import httpx
-                data = request.get_json() or {}
-                confidence = data.get('confidence_threshold', 0.25)
-                
-                response = httpx.post(
-                    f"http://{self.old_nano_host}:9000/watch_person",
-                    json={"confidence_threshold": confidence},
-                    timeout=5.0
-                )
-                response.raise_for_status()
-                return jsonify(response.json())
-            except httpx.ConnectError:
-                return jsonify({"success": False, "error": "Cannot connect to old-nano. Ensure service is running."}), 500
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)}), 500
-        
-        @self.app.route('/stop_watch', methods=['POST'])
-        def stop_watch():
-            """Stop continuous person detection on old-nano."""
-            try:
-                import httpx
-                response = httpx.post(
-                    f"http://{self.old_nano_host}:9000/stop_watch",
-                    json={},
-                    timeout=5.0
-                )
-                response.raise_for_status()
-                return jsonify(response.json())
-            except httpx.ConnectError:
-                return jsonify({"success": False, "error": "Cannot connect to old-nano."}), 500
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)}), 500
     
     def _generate_video_frames(self):
         """Generate MJPEG frames from video capture."""
@@ -1371,20 +1242,46 @@ class TrackingViewerJanChat:
                 if not ret:
                     break
                 
+                # Ensure frame is a proper numpy array (fixes NumPy 2.x compatibility)
+                if not isinstance(frame, np.ndarray):
+                    frame = np.array(frame)
+                # Ensure contiguous array for PyTorch compatibility
+                if not frame.flags['C_CONTIGUOUS']:
+                    frame = np.ascontiguousarray(frame)
+                
                 frame_count += 1
                 self.frame_count = frame_count  # Update total frame count
                 timestamp_str = datetime.now().isoformat()
                 
                 # Run tracking (bounding boxes only, no masks)
-                # Determine imgsz based on TensorRT engine
-                imgsz_for_tracking = 640 if self.is_tensorrt_engine else None  # None = use default
-                results = self.model.track(
-                    frame,
-                    conf=self.confidence_threshold,
-                    persist=True,
-                    verbose=False,
-                    imgsz=imgsz_for_tracking  # Explicitly set for TensorRT
-                )
+                # Wrap in try-except to catch GPU OOM during inference/warmup
+                try:
+                    results = self.model.track(
+                        frame,
+                        conf=self.confidence_threshold,
+                        persist=True,
+                        verbose=False
+                    )
+                except RuntimeError as e:
+                    # If GPU OOM during tracking (e.g., during warmup), fallback to CPU
+                    if 'out of memory' in str(e).lower() or 'cuda' in str(e).lower():
+                        print(f"[WARNING] GPU OOM during YOLO tracking: {e}")
+                        print(f"[INFO] Falling back to CPU for YOLO...")
+                        # Move model to CPU
+                        if hasattr(self.model, 'model') and hasattr(self.model.model, 'to'):
+                            self.model.model.to('cpu')
+                        if hasattr(self.model, 'predictor') and hasattr(self.model.predictor, 'device'):
+                            self.model.predictor.device = 'cpu'
+                        # Retry on CPU
+                        results = self.model.track(
+                            frame,
+                            conf=self.confidence_threshold,
+                            persist=True,
+                            verbose=False
+                        )
+                        print(f"[INFO] YOLO now using CPU")
+                    else:
+                        raise
                 
                 raw_frame_for_detection = frame.copy()
                 annotated_frame = frame.copy()
@@ -1642,7 +1539,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
     parser.add_argument("--confidence", type=float, default=0.25, help="Confidence threshold")
     parser.add_argument("--no-gstreamer", action="store_true", help="Disable GStreamer")
-    parser.add_argument("--port", type=int, default=8083, help="Web server port")
+    parser.add_argument("--port", type=int, default=8080, help="Web server port")
     parser.add_argument("--duration", type=float, default=0, help="Duration in seconds (0 = until stopped)")
     parser.add_argument("--stt-audio", action="store_true", help="Enable STT audio input (requires --stt-model-path)")
     parser.add_argument("--stt-model-path", type=str, default=None, help="Path to Parakeet .nemo model (required for --stt-audio)")

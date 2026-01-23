@@ -135,28 +135,24 @@ class ParakeetSTT:
         
         # Try to find model if path not provided
         if model_path is None:
-            # Check local models directory first
-            local_model_paths = [
-                PROJECT_ROOT / "models" / "parakeet" / "parakeet-tdt-0.6b-v2.nemo",
-                PROJECT_ROOT / "models" / "parakeet" / "*.nemo",
-            ]
+            # Check local models directory first (use absolute path)
+            parakeet_dir = Path("/home/ordun/Documents/snowcrash/models/parakeet")
+            exact_path = parakeet_dir / "parakeet-tdt-0.6b-v2.nemo"
             
             # Try exact path first
-            if local_model_paths[0].exists():
-                model_path = str(local_model_paths[0])
-            else:
+            if exact_path.exists():
+                model_path = str(exact_path)
+            elif parakeet_dir.exists():
                 # Try to find any .nemo file in parakeet directory
-                parakeet_dir = PROJECT_ROOT / "models" / "parakeet"
-                if parakeet_dir.exists():
-                    nemo_files = list(parakeet_dir.glob("*.nemo"))
-                    if nemo_files:
-                        model_path = str(nemo_files[0])
-                    else:
-                        # Fallback: try loading from HuggingFace
-                        model_path = "nvidia/parakeet-tdt-0.6b-v2"
+                nemo_files = list(parakeet_dir.glob("*.nemo"))
+                if nemo_files:
+                    model_path = str(nemo_files[0])
                 else:
                     # Fallback: try loading from HuggingFace
                     model_path = "nvidia/parakeet-tdt-0.6b-v2"
+            else:
+                # Fallback: try loading from HuggingFace
+                model_path = "nvidia/parakeet-tdt-0.6b-v2"
         
         self.model_path = model_path
         self._load_model()

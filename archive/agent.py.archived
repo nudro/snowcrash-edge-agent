@@ -21,12 +21,29 @@ from langchain_core.runnables import RunnablePassthrough
 from agent.langchain_tools import get_langchain_tools
 
 # For local LLM (llama.cpp)
+# Fix library path conflict with Ollama's CUDA libraries
+# IMPORTANT: This must happen before any llama-cpp imports
+import os
+# Save original LD_LIBRARY_PATH for potential restoration
+_original_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+os.environ['_ORIGINAL_LD_PATH'] = _original_ld_path  # Store for debugging
+
 try:
     from langchain_community.llms import LlamaCpp
     from langchain_community.chat_models import ChatLlamaCpp
     LLAMA_CPP_AVAILABLE = True
-except ImportError:
+except (ImportError, RuntimeError) as e:
+    # Restore original LD_LIBRARY_PATH if import fails
+    if _original_ld_path:
+        os.environ['LD_LIBRARY_PATH'] = _original_ld_path
     LLAMA_CPP_AVAILABLE = False
+    error_msg = str(e)
+    if isinstance(e, RuntimeError) and ('Failed to load shared library' in error_msg or 'undefined symbol' in error_msg):
+        import warnings
+        warnings.warn(
+            f"llama-cpp-python library conflict detected: {error_msg}\n"
+            f"To fix manually, run: export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | tr ':' '\\n' | grep -v -i ollama | tr '\\n' ':' | sed 's/:$//')"
+        )
 
 # For OpenAI-compatible API (if available)
 try:
@@ -117,6 +134,66 @@ class SnowcrashAgent:
         else:
             if self.verbose:
                 print(f"[WARNING] CUDA not available - SLM will run on CPU (slower)")
+        
+        # Hardcode LD_LIBRARY_PATH to ONLY include llama-cpp-python's library directory
+        # This prevents Ollama's libraries from being found even if they're in system paths
+        # This is critical because the library loading happens at LlamaCpp instantiation time
+        
+        # Find llama-cpp-python installation path without importing (to avoid library conflicts)
+        llama_cpp_lib_dir = None
+        try:
+            import site
+            import sysconfig
+            # Try to find llama_cpp package location
+            for site_packages in site.getsitepackages() + [site.getusersitepackages()]:
+                llama_cpp_path = Path(site_packages) / "llama_cpp"
+                lib_dir = llama_cpp_path / "lib"
+                if lib_dir.exists():
+                    llama_cpp_lib_dir = str(lib_dir)
+                    break
+        except:
+            pass
+        
+        # If we found it, use it; otherwise try importing (might fail but worth trying)
+        if not llama_cpp_lib_dir:
+            try:
+                import llama_cpp
+                llama_cpp_lib_dir = str(Path(llama_cpp.__file__).parent / "lib")
+            except ImportError:
+                pass
+        
+        if llama_cpp_lib_dir:
+            # Set LD_LIBRARY_PATH to ONLY llama-cpp-python's lib directory
+            # This ensures it finds its own libraries first, before system/Ollama paths
+            os.environ['LD_LIBRARY_PATH'] = llama_cpp_lib_dir
+            
+            if self.verbose:
+                print(f"[INFO] Set LD_LIBRARY_PATH to llama-cpp-python library directory")
+                print(f"[INFO]   Library path: {llama_cpp_lib_dir}")
+                if os.environ.get('DEBUG_LD_PATH'):
+                    original_path = os.environ.get('_ORIGINAL_LD_PATH', '')
+                    if original_path:
+                        print(f"[DEBUG] Original LD_LIBRARY_PATH: {original_path}")
+        else:
+            # Fallback: filter out ollama paths if we can't find llama-cpp-python
+            current_ld_path = os.environ.get('LD_LIBRARY_PATH', '')
+            if current_ld_path:
+                paths = current_ld_path.split(':')
+                seen = set()
+                filtered_paths = []
+                for p in paths:
+                    p_clean = p.strip()
+                    if p_clean and 'ollama' not in p_clean.lower() and p_clean not in seen:
+                        filtered_paths.append(p_clean)
+                        seen.add(p_clean)
+                if filtered_paths:
+                    os.environ['LD_LIBRARY_PATH'] = ':'.join(filtered_paths)
+                else:
+                    os.environ['LD_LIBRARY_PATH'] = ''
+            else:
+                os.environ['LD_LIBRARY_PATH'] = ''
+            if self.verbose:
+                print(f"[WARNING] Could not find llama-cpp-python library directory, using filtered LD_LIBRARY_PATH")
         
         return LlamaCpp(
             model_path=str(model_path),

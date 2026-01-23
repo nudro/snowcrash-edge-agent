@@ -1,0 +1,372 @@
+{
+  "tools": {
+    "yolo_object_detection": {
+      "keywords": [
+        "image", "picture", "photo", "detect", "objects", "yolo",
+        "analyze image", "webcam", "camera", "cam",
+        "video stream", "video", "stream", "live",
+        "detect objects in the video",
+        "how many", "count", "number of", "what objects", "list objects",
+        "target count", "targets", "target identification"
+      ],
+      "synonyms": {
+        "image": ["picture", "photo", "photo"],
+        "detect": ["find", "identify", "locate", "spot"],
+        "objects": ["things", "items", "targets"]
+      },
+      "object_classes": [
+        "car", "person", "bicycle", "motorcycle", "bus", "truck",
+        "bench", "chair", "couch", "bed", "dog", "cat", "bird",
+        "bottle", "cup", "laptop", "mouse", "keyboard", "phone", "book"
+      ],
+      "semantic_mappings": {
+        "sweater": "person",
+        "shirt": "person",
+        "jacket": "person",
+        "pants": "person",
+        "dress": "person",
+        "face": "person",
+        "hand": "person",
+        "foot": "person",
+        "head": "person",
+        "vehicle": "car",
+        "auto": "car",
+        "bike": "bicycle",
+        "motorbike": "motorcycle"
+      }
+    },
+    "track_objects": {
+      "keywords": [
+        "track", "tracking", "follow", "track objects", "track object",
+        "track the", "follow that", "persistent id", "track id",
+        "are objects moving", "are the objects moving", "which objects are moving",
+        "what is moving", "what's moving", "objects moving", "moving objects",
+        "is anything moving", "detect movement", "check movement",
+        "are any objects moving", "any objects moving", "moving in video"
+      ],
+      "synonyms": {
+        "track": ["follow", "monitor", "watch"],
+        "tracking": ["following", "monitoring"],
+        "moving": ["moving", "in motion", "moving around"]
+      }
+    },
+    "get_detection_statistics": {
+      "keywords": [
+        "statistics", "stats", "most common", "detection count",
+        "average confidence", "aggregate", "summary",
+        "status check", "situation", "situational awareness", "current status"
+      ],
+      "synonyms": {
+        "statistics": ["stats", "summary", "aggregate"],
+        "most common": ["most frequent", "most seen"]
+      }
+    },
+    "estimate_object_distances": {
+      "keywords": [
+        "distance", "distances", "how far", "far away", "estimate distance",
+        "meters away", "feet away", "how close",
+        "distance report", "range", "range to target", "distances to",
+        "which", "closer", "closest", "farther", "farthest", "nearest", "furthest",
+        "compare distances", "order by distance", "closest to farthest",
+        "next to", "near", "beside", "left of", "right of",
+        "above", "below", "in front of", "behind",
+        "between", "inside", "outside", "to the left", "to the right",
+        "relative to", "relative", "direction", "where is", "where"
+      ],
+      "synonyms": {
+        "distance": ["range", "how far", "how close"],
+        "wrt": ["with respect to", "relative to", "compared to"],
+        "closer": ["nearest", "closest"],
+        "farther": ["furthest", "farthest"]
+      }
+    },
+    "color_detection": {
+      "keywords": [
+        "color", "colour", "what color", "what colour", "colors", "colours",
+        "color of", "colour of", "paint", "painted",
+        "color intel", "intel", "target identification", "visual identification"
+      ],
+      "synonyms": {
+        "color": ["colour", "paint", "painted"],
+        "what color": ["what colour", "color of", "colour of"]
+      }
+    },
+    "gui_viewer": {
+      "keywords": [
+        "view", "show", "display", "open viewer", "show me", "let me see",
+        "gui", "visualize", "visualization", "show tracking", "show detections",
+        "tracking viewer", "view tracking", "show tracking viewer"
+      ],
+      "synonyms": {
+        "view": ["show", "display", "visualize"],
+        "gui": ["interface", "viewer", "visualization"]
+      }
+    }
+  },
+  "query_types": {
+    "detection": {
+      "keywords": ["detect", "detection", "find", "identify", "what objects", "how many"],
+      "requires_llm": false
+    },
+    "color": {
+      "keywords": [
+        "color", "colour", "what color", "what colour", "colors", "colours",
+        "color of", "colour of", "paint", "painted",
+        "color intel", "intel", "target identification", "visual identification"
+      ],
+      "requires_llm": true
+    },
+    "distance": {
+      "keywords": [
+        "distance", "distances", "how far", "far away", "estimate distance",
+        "meters away", "feet away", "how close",
+        "distance report", "range", "range to target", "distances to"
+      ],
+      "requires_llm": false
+    },
+    "distance_comparison": {
+      "keywords": [
+        "which", "closer", "closest", "farther", "farthest", "nearest", "furthest",
+        "compare distances", "order by distance", "closest to farthest"
+      ],
+      "requires_llm": false
+    },
+    "spatial": {
+      "keywords": [
+        "next to", "near", "beside", "left of", "right of",
+        "above", "below", "in front of", "behind",
+        "between", "inside", "outside", "to the left", "to the right",
+        "relative to", "relative", "direction", "where is", "where",
+        "wrt", "with respect to"
+      ],
+      "requires_llm": true
+    },
+    "tracking": {
+      "keywords": [
+        "track", "tracking", "follow", "track objects", "track object",
+        "track the", "follow that", "persistent id", "track id"
+      ],
+      "requires_llm": false
+    },
+    "movement": {
+      "keywords": [
+        "are objects moving", "are the objects moving", "which objects are moving",
+        "what is moving", "what's moving", "objects moving", "moving objects",
+        "is anything moving", "detect movement", "check movement"
+      ],
+      "requires_llm": false
+    },
+    "speed": {
+      "keywords": [
+        "speed", "how fast", "velocity", "speed of", "fast is", "how fast is",
+        "speed of the", "how fast is the", "what speed", "what's the speed",
+        "speed for", "velocity of", "rate of movement"
+      ],
+      "requires_llm": false
+    },
+    "duration": {
+      "keywords": [
+        "how long", "how long has", "how long been", "duration", "been in video",
+        "been in frame", "time in", "time on video", "minutes in"
+      ],
+      "requires_llm": false
+    },
+    "statistics": {
+      "keywords": [
+        "statistics", "stats", "most common", "detection count",
+        "average confidence", "aggregate", "summary",
+        "status check", "situation", "situational awareness", "current status"
+      ],
+      "requires_llm": false
+    },
+    "environment": {
+      "keywords": [
+        "what kind of environment", "what kind of place", "what environment",
+        "what type of environment", "based on objects", "what kind of location",
+        "what setting", "what scene", "environment scan"
+      ],
+      "requires_llm": true
+    },
+    "gui": {
+      "keywords": [
+        "view", "show", "display", "open viewer", "show me", "let me see",
+        "gui", "visualize", "visualization", "show tracking", "show detections",
+        "tracking viewer", "view tracking", "show tracking viewer"
+      ],
+      "requires_llm": false
+    }
+  },
+    "cached_queries": {
+    "Status Check": {
+      "tool": "get_detection_statistics",
+      "query_type": "statistics",
+      "prompt": "What's the current situation?",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Target Count": {
+      "tool": "yolo_object_detection",
+      "query_type": "detection",
+      "prompt": "How many objects detected?",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Distance Report": {
+      "tool": "estimate_object_distances",
+      "query_type": "distance",
+      "prompt": "Distances to all targets",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Position Update": {
+      "tool": "estimate_object_distances",
+      "query_type": "spatial",
+      "prompt": "Positions of all objects",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Color Intel": {
+      "tool": "color_detection",
+      "query_type": "color",
+      "prompt": "Color identification of targets",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Track IDs": {
+      "tool": "track_objects",
+      "query_type": "tracking",
+      "prompt": "List all active track IDs",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Environment Scan": {
+      "tool": "yolo_object_detection",
+      "query_type": "environment",
+      "prompt": "Based on the objects in the video, what kind of environment is this?",
+      "direct_call": false,
+      "needs_llm": true
+    },
+    "How Many": {
+      "tool": "yolo_object_detection",
+      "query_type": "detection",
+      "prompt": "how many",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Count Objects": {
+      "tool": "yolo_object_detection",
+      "query_type": "detection",
+      "prompt": "count",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Show Stats": {
+      "tool": "get_detection_statistics",
+      "query_type": "statistics",
+      "prompt": "show stats",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Get Statistics": {
+      "tool": "get_detection_statistics",
+      "query_type": "statistics",
+      "prompt": "statistics",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "How Far": {
+      "tool": "estimate_object_distances",
+      "query_type": "distance",
+      "prompt": "how far",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Distance To": {
+      "tool": "estimate_object_distances",
+      "query_type": "distance",
+      "prompt": "distance to",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Track Objects": {
+      "tool": "track_objects",
+      "query_type": "tracking",
+      "prompt": "track",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Follow Objects": {
+      "tool": "track_objects",
+      "query_type": "tracking",
+      "prompt": "follow",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "What Color": {
+      "tool": "color_detection",
+      "query_type": "color",
+      "prompt": "what color",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Color Of": {
+      "tool": "color_detection",
+      "query_type": "color",
+      "prompt": "color of",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Show Viewer": {
+      "tool": "gui_viewer",
+      "query_type": "gui",
+      "prompt": "show viewer",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Open GUI": {
+      "tool": "gui_viewer",
+      "query_type": "gui",
+      "prompt": "open gui",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "Detect Objects": {
+      "tool": "yolo_object_detection",
+      "query_type": "detection",
+      "prompt": "detect objects",
+      "direct_call": true,
+      "needs_llm": false
+    },
+    "List Objects": {
+      "tool": "yolo_object_detection",
+      "query_type": "detection",
+      "prompt": "list objects",
+      "direct_call": true,
+      "needs_llm": false
+    }
+  },
+  "object_classes": [
+    "car", "person", "bicycle", "motorcycle", "bus", "truck",
+    "bench", "chair", "couch", "bed", "dog", "cat", "bird",
+    "bottle", "cup", "laptop", "mouse", "keyboard", "phone", "book"
+  ],
+  "semantic_mappings": {
+    "sweater": "person",
+    "shirt": "person",
+    "jacket": "person",
+    "pants": "person",
+    "dress": "person",
+    "face": "person",
+    "hand": "person",
+    "foot": "person",
+    "head": "person",
+    "vehicle": "car",
+    "auto": "car",
+    "bike": "bicycle",
+    "motorbike": "motorcycle",
+    "cars": "car",
+    "people": "person",
+    "persons": "person"
+  }
+}
+

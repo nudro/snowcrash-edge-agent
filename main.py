@@ -5,6 +5,7 @@ Starts both the agentic agent and the web-based tracking viewer GUI.
 Supports Speech-to-Text (STT) mode using NVIDIA Parakeet (primary) or Whisper (backup).
 """
 import sys
+import os
 import argparse
 import threading
 import time
@@ -296,10 +297,13 @@ def main():
                        help="Disable web-based tracking viewer GUI (default: GUI enabled)")
     parser.add_argument("--gui-viewer", type=str, choices=["default", "chatgui", "audiogui"], default="default",
                        help="GUI viewer type: 'default' (original), 'chatgui' (with chat), or 'audiogui' (with audio visualization). Default: default")
-    parser.add_argument("--gui-port", type=int, default=8080, 
-                       help="Port for web viewer GUI (default: 8080)")
+    parser.add_argument("--gui-port", type=int, default=8083, 
+                       help="Port for web viewer GUI (default: 8083)")
     parser.add_argument("--gui-device", type=int, default=0, 
                        help="Camera device for GUI (default: 0)")
+    parser.add_argument("--old-nano-host", type=str, 
+                       default=os.environ.get("OLD_NANO_HOST", "old-nano"),
+                       help="Hostname or IP of old-nano YOLO service (default: old-nano or OLD_NANO_HOST env var)")
     
     # STT (Speech-to-Text) options
     parser.add_argument("--stt", action="store_true",
@@ -436,7 +440,8 @@ def main():
                     stt_model=stt_for_chatgui,  # Pass Parakeet STT instance if audio input enabled
                     stt_enabled=args.gui_stt_audio,  # Enable STT audio input in chatgui
                     stt_card=args.stt_card,  # USB microphone card number
-                    stt_chunk_duration=args.stt_chunk_duration  # Audio chunk duration
+                    stt_chunk_duration=args.stt_chunk_duration,  # Audio chunk duration
+                    old_nano_host=args.old_nano_host  # Pass old-nano hostname/IP
                 )
             else:
                 from tools.tracking_web_viewer import TrackingWebViewer
@@ -451,30 +456,30 @@ def main():
                 )
             
             # Update agent's web_viewer reference
-            agent.web_viewer = viewer_instance
-            
-            # Run viewer in background thread
-            def run_viewer():
-                viewer_instance.run(duration_seconds=0)  # Run until stopped
-            
-            viewer_thread = threading.Thread(target=run_viewer, daemon=True)
-            viewer_thread.start()
-            
-            # Give it a moment to start
-            time.sleep(2)
-            
-            # Get device IP for display
-            try:
-                import socket
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                device_ip = s.getsockname()[0]
-                s.close()
-            except:
-                device_ip = "localhost"
-            
-            print(f"[MAIN] Web viewer started at http://{device_ip}:{args.gui_port}")
-            print(f"[MAIN] Open your browser to view tracking GUI")
+        agent.web_viewer = viewer_instance
+        
+        # Run viewer in background thread
+        def run_viewer():
+            viewer_instance.run(duration_seconds=0)  # Run until stopped
+        
+        viewer_thread = threading.Thread(target=run_viewer, daemon=True)
+        viewer_thread.start()
+        
+        # Give it a moment to start
+        time.sleep(2)
+        
+        # Get device IP for display
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            device_ip = s.getsockname()[0]
+            s.close()
+        except:
+            device_ip = "localhost"
+        
+        print(f"[MAIN] Web viewer started at http://{device_ip}:{args.gui_port}")
+        print(f"[MAIN] Open your browser to view tracking GUI")
         except Exception as e:
             print(f"[ERROR] Failed to start web viewer: {e}")
             print("[ERROR] GUI failed to start. Please check your dependencies and try again.")

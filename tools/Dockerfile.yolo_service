@@ -1,0 +1,30 @@
+# Dockerfile for YOLO Detection Service on Jetson Nano (old-nano)
+# Uses official Ultralytics Docker image for JetPack compatibility
+
+FROM ultralytics/ultralytics:latest-jetson
+
+# Set working directory
+WORKDIR /app
+
+# Create tools directory structure
+RUN mkdir -p /app/tools
+
+# Copy service files
+COPY tools/yolo_detection_service.py /app/tools/
+COPY tools/desktop_notification.py /app/tools/
+
+# Create empty __init__.py if it doesn't exist
+RUN touch /app/tools/__init__.py
+
+# Install Flask for HTTP server
+RUN pip3 install flask httpx
+
+# Add project root to Python path
+ENV PYTHONPATH=/app:$PYTHONPATH
+
+# Expose port
+EXPOSE 8080
+
+# Default command (can be overridden)
+CMD ["python3", "/app/tools/yolo_detection_service.py", "--host", "0.0.0.0", "--port", "8080", "--device", "0"]
+

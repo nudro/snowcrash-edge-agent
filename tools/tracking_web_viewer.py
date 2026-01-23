@@ -249,9 +249,9 @@ class TrackingWebViewer:
     
     def __init__(
         self,
-        model_path: str = "yolo26n-seg.pt",
+        model_path: str = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt",
         device: int = 0,
-        confidence_threshold: float = 0.25,
+        confidence_threshold: float = 0.15,  # Lower threshold for better small object detection
         use_gstreamer: bool = True,
         port: int = 8080
     ):
@@ -267,7 +267,16 @@ class TrackingWebViewer:
         self.port = port
         
         print(f"Loading YOLO model: {model_path}")
-        self.model = YOLO(model_path)
+        # Auto-detect TensorRT (.engine) or PyTorch (.pt) format
+        from tools.yolo_utils import load_yolo_model
+        self.model = load_yolo_model(model_path, verbose=True)
+        
+        # Check if TensorRT engine exists
+        from pathlib import Path
+        engine_path = Path(model_path).with_suffix('.engine')
+        self.is_tensorrt_engine = engine_path.exists()
+        if self.is_tensorrt_engine:
+            print(f"[INFO] TensorRT engine detected, will use imgsz=640")
         
         # Track data storage (shared between threads)
         self.tracks_data = {}
@@ -502,11 +511,14 @@ class TrackingWebViewer:
                 timestamp_str = datetime.now().isoformat()
                 
                 # Run tracking
+                # Determine imgsz based on TensorRT engine
+                imgsz_for_tracking = 640 if self.is_tensorrt_engine else None  # None = use default
                 results = self.model.track(
                     frame,
                     conf=self.confidence_threshold,
                     persist=True,
-                    verbose=False
+                    verbose=False,
+                    imgsz=imgsz_for_tracking  # Explicitly set for TensorRT
                 )
                 
                 # Store raw frame BEFORE annotations (for detection tools)
@@ -723,9 +735,9 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Web-based object tracking viewer")
-    parser.add_argument("--model", type=str, default="yolo26n-seg.pt", help="YOLO model path")
+    parser.add_argument("--model", type=str, default="/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt", help="YOLO model path")
     parser.add_argument("--device", type=int, default=0, help="Camera device index")
-    parser.add_argument("--confidence", type=float, default=0.25, help="Confidence threshold")
+    parser.add_argument("--confidence", type=float, default=0.15, help="Confidence threshold (lower for better small object detection)")
     parser.add_argument("--no-gstreamer", action="store_true", help="Disable GStreamer")
     parser.add_argument("--port", type=int, default=8080, help="Web server port")
     parser.add_argument("--duration", type=float, default=0, help="Duration in seconds (0 = until stopped)")

@@ -6,12 +6,17 @@ Works with local LLMs and MCP tools.
 import sys
 import asyncio
 import json
+import re
+import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# Models directory path (relative to project root)
+MODELS_DIR = PROJECT_ROOT / "models"
 
 from langchain_core.prompts import ChatPromptTemplate
 from agent.langchain_tools import (
@@ -21,6 +26,7 @@ from agent.langchain_tools import (
     get_detection_statistics,
     estimate_object_distances
 )
+from agent.vision_tool import create_vision_tool
 from agent.query_keywords import (
     TRACKING_KEYWORDS, STATS_KEYWORDS, DISTANCE_KEYWORDS, DISTANCE_COMPARISON_KEYWORDS,
     IMAGE_VIDEO_KEYWORDS, VIDEO_KEYWORDS,
@@ -29,7 +35,7 @@ from agent.query_keywords import (
     COLOR_QUERY_KEYWORDS, VIEW_GUI_KEYWORDS, COMMON_OBJECT_CLASSES, FOLLOW_UP_PATTERNS,
     TIMESTAMP_KEYWORDS, FRAME_KEYWORDS, BOTH_LOGGING_KEYWORDS,
     NUMERIC_DURATION_PATTERNS, WORD_TO_NUMBER, WORD_DURATION_PATTERNS,
-    IMAGE_PATH_PATTERNS, TRACK_ID_PATTERN, OBJECT_CLASS_PATTERN, POSITION_KEYWORDS
+    IMAGE_PATH_PATTERNS, TRACK_ID_PATTERN, OBJECT_CLASS_PATTERN
 )
 
 # For local LLM (llama.cpp)
@@ -38,6 +44,34 @@ try:
     LLAMA_CPP_AVAILABLE = True
 except ImportError:
     LLAMA_CPP_AVAILABLE = False
+
+# For Docker-based LLM (llama-server)
+try:
+    from agent.docker_llm import DockerLLMAdapter
+    from agent.container_manager import ContainerManager
+    DOCKER_LLM_AVAILABLE = True
+except ImportError as e:
+    DOCKER_LLM_AVAILABLE = False
+    DOCKER_IMPORT_ERROR = str(e)
+    ContainerManager = None  # For type hints
+
+# Query understanding router
+try:
+    from agent.query_router import QueryUnderstandingRouter
+    QUERY_ROUTER_AVAILABLE = True
+except ImportError as e:
+    QUERY_ROUTER_AVAILABLE = False
+    QUERY_ROUTER_IMPORT_ERROR = str(e)
+    QueryUnderstandingRouter = None
+
+# Query ontology matcher (fast keyword-based routing)
+try:
+    from agent.query_ontology import QueryOntologyMatcher
+    QUERY_ONTOLOGY_AVAILABLE = True
+except ImportError as e:
+    QUERY_ONTOLOGY_AVAILABLE = False
+    QUERY_ONTOLOGY_IMPORT_ERROR = str(e)
+    QueryOntologyMatcher = None
 
 
 class SimpleAgent:
@@ -55,7 +89,10 @@ class SimpleAgent:
         model_type: Optional[str] = None,
         temperature: float = 0.7,
         verbose: bool = True,
-        web_viewer=None
+        web_viewer=None,
+        use_docker: bool = True,
+        docker_port: Optional[int] = None,
+        container_manager: Optional[ContainerManager] = None
     ):
         """
         Initialize the agent.
@@ -66,34 +103,99 @@ class SimpleAgent:
             model_type: Model to use - "phi-3", "llama", or "gemma" (optional)
             temperature: LLM temperature
             verbose: Whether to print agent reasoning
+            use_docker: Use Docker llama-server (default: True, falls back to llama-cpp-python if fails)
+            docker_port: Port for Docker llama-server (auto-assigned if None)
+            container_manager: ContainerManager instance (created if None)
         """
         self.verbose = verbose
         self.tools = get_langchain_tools()
         self.tool_map = {tool.name: tool for tool in self.tools}
         self.model_type = model_type
         self.web_viewer = web_viewer  # Reference to web viewer if already running
+        self.use_docker = use_docker
+        self.docker_port = docker_port
+        self.container_manager = container_manager
         
         # Initialize LLM
+        self.llm = None
         if llm is None:
-            if model_path and LLAMA_CPP_AVAILABLE:
-                # Use explicit model path
-                self.llm = self._create_llama_llm(model_path, temperature)
-                self.model_type = self._detect_model_type(model_path)
-            elif model_type and LLAMA_CPP_AVAILABLE:
-                # Auto-detect model path from model_type
-                model_path = self._find_model_by_type(model_type)
-                if model_path:
-                    self.llm = self._create_llama_llm(model_path, temperature)
+            # Try Docker first (if enabled), fallback to llama-cpp-python
+            if use_docker and DOCKER_LLM_AVAILABLE and model_type:
+                try:
+                    # Get or create container manager
+                    if self.container_manager is None:
+                        self.container_manager = ContainerManager(verbose=verbose)
+                    
+                    # Start container and get port
+                    port = self.container_manager.start_model_container(model_type)
+                    if port:
+                        # Use Docker LLM adapter
+                        self.llm = DockerLLMAdapter(
+                            model_type=model_type,
+                            port=port if docker_port is None else docker_port,
+                            temperature=temperature,
+                            verbose=verbose
+                        )
+                        if self.verbose:
+                            print(f"[OK] Using Docker llama-server for {model_type} on port {port}")
+                    else:
+                        raise RuntimeError("Failed to start Docker container")
+                except Exception as e:
                     if self.verbose:
-                        print(f"[OK] Loaded {model_type} model: {model_path}")
+                        print(f"[WARNING] Docker mode failed: {e}")
+                        print(f"[WARNING] Falling back to llama-cpp-python...")
+                    # Fall through to llama-cpp-python
+                    use_docker = False
+                    self.llm = None  # Ensure llm is reset so fallback works
+            
+            # Fallback to llama-cpp-python (or if Docker disabled)
+            if not use_docker or self.llm is None:
+                if model_path and LLAMA_CPP_AVAILABLE:
+                    # Use explicit model path
+                    self.llm = self._create_llama_llm(model_path, temperature)
+                    self.model_type = self._detect_model_type(model_path)
+                elif model_type and LLAMA_CPP_AVAILABLE:
+                    # Auto-detect model path from model_type
+                    model_path = self._find_model_by_type(model_type)
+                    if model_path:
+                        self.llm = self._create_llama_llm(model_path, temperature)
+                        if self.verbose:
+                            print(f"[OK] Loaded {model_type} model: {model_path}")
+                    else:
+                        print(f"[WARNING] {model_type} model not found. Install models first.")
+                        self.llm = None
                 else:
-                    print(f"[WARNING] {model_type} model not found. Install models first.")
+                    if use_docker:
+                        print("[WARNING] Docker failed and llama-cpp-python not available.")
+                    else:
+                        print("[WARNING] No LLM available. Install llama-cpp-python")
                     self.llm = None
-            else:
-                print("[WARNING] No LLM available. Install llama-cpp-python")
-                self.llm = None
         else:
             self.llm = llm
+        
+        # Initialize query ontology matcher (fast keyword-based routing)
+        self.query_ontology = None
+        if QUERY_ONTOLOGY_AVAILABLE:
+            try:
+                self.query_ontology = QueryOntologyMatcher()
+                if self.verbose:
+                    print("[OK] Query ontology matcher initialized")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[WARNING] Failed to initialize query ontology: {e}")
+                self.query_ontology = None
+        
+        # Initialize query understanding router (LLM-based semantic understanding - only used when needed)
+        self.query_router = None
+        if self.llm is not None and QUERY_ROUTER_AVAILABLE:
+            try:
+                self.query_router = QueryUnderstandingRouter(self.llm, verbose=verbose)
+                if self.verbose:
+                    print("[OK] Query understanding router initialized")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[WARNING] Failed to initialize query router: {e}")
+                self.query_router = None
     
     def _detect_model_type(self, model_path: str) -> Optional[str]:
         """Detect model type from file path."""
@@ -108,7 +210,8 @@ class SimpleAgent:
     
     def _find_model_by_type(self, model_type: str) -> Optional[str]:
         """Find model file path by type."""
-        models_dir = PROJECT_ROOT / "models"
+        # Use models directory relative to project root
+        models_dir = MODELS_DIR
         
         # Map model types to directories
         model_dirs = {
@@ -141,176 +244,35 @@ class SimpleAgent:
         if not model_file.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
         
-        # Check if CUDA is available for GPU offloading
-        try:
-            import torch
-            cuda_available = torch.cuda.is_available()
-            if cuda_available:
-                gpu_name = torch.cuda.get_device_name(0)
-                gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        except ImportError:
-            cuda_available = False
-            gpu_name = None
-            gpu_memory = None
-        
-        # GPU offloading: use -1 to offload all layers to GPU
-        # This is required even if llama-cpp-python is built with CUDA support
-        # Without this, models will still run on CPU even with CUDA build
-        n_gpu_layers = -1 if cuda_available else 0
-        
-        if cuda_available:
-            if self.verbose:
-                print(f"[INFO] GPU acceleration enabled: offloading all layers to GPU")
-                print(f"[INFO] GPU: {gpu_name}, Memory: {gpu_memory:.2f} GB")
-        else:
-            if self.verbose:
-                print(f"[WARNING] CUDA not available - SLM will run on CPU (slower)")
-        
-        # Enable verbose mode temporarily to see GPU offloading status
-        # llama.cpp will print layer offloading info if verbose=True
-        llm = LlamaCpp(
+        return LlamaCpp(
             model_path=str(model_path),
             temperature=temperature,
             n_ctx=2048,
             n_batch=512,
-            n_gpu_layers=n_gpu_layers,  # Offload all layers to GPU when CUDA is available
-            verbose=True if self.verbose else False,  # Show GPU offloading info
+            verbose=False,
         )
-        
-        # Verify GPU offloading after initialization
-        if cuda_available and self.verbose:
-            try:
-                import torch
-                # Check GPU memory before loading model
-                gpu_mem_before = torch.cuda.memory_allocated(0) / 1024**3
-                
-                # Check if llama.cpp actually detected GPU
-                if hasattr(llm.client, 'n_gpu_layers'):
-                    actual_gpu_layers = llm.client.n_gpu_layers
-                    if actual_gpu_layers > 0:
-                        print(f"[INFO] ✓ Confirmed: llama.cpp loaded {actual_gpu_layers} layers on GPU")
-                        # Verify GPU memory increased
-                        gpu_mem_after = torch.cuda.memory_allocated(0) / 1024**3
-                        if gpu_mem_after > gpu_mem_before:
-                            print(f"[INFO] ✓ GPU memory increased: {gpu_mem_after - gpu_mem_before:.2f} GB (model loaded on GPU)")
-                        else:
-                            print(f"[WARNING] GPU memory didn't increase - model may still be on CPU")
-                    else:
-                        print(f"[ERROR] ✗ llama.cpp reports 0 GPU layers - running on CPU!")
-                        print(f"[ERROR] ✗ llama-cpp-python was NOT built with CUDA support!")
-                        print(f"[ERROR] ✗ SLM will be VERY SLOW (5-10 seconds per response)")
-                        print(f"[FIX] Rebuild llama-cpp-python with CUDA:")
-                        print(f"[FIX]   CMAKE_ARGS='-DLLAMA_CUBLAS=on -DCMAKE_CUDA_ARCHITECTURES=87' pip install --force-reinstall --no-cache-dir llama-cpp-python")
-                        print(f"[FIX]   This will make SLM 10-20x faster!")
-            except Exception as e:
-                if self.verbose:
-                    print(f"[WARNING] Could not verify GPU usage: {e}")
-        
-        return llm
     
     async def _should_use_tool(self, prompt: str) -> Optional[str]:
-        """
-        Decide if we should use a tool based on prompt (hybrid: keywords + LLM reasoning).
-        
-        Flow:
-        1. Check keywords first (fast path)
-        2. If exactly 1 match → use that tool immediately (fast path)
-        3. If multiple matches or ambiguous → ask LLM to choose the best tool
-        4. If no matches but seems tool-related → ask LLM if tool needed
-        5. If no matches and not tool-related → return None (will fallback to LLM)
-        """
+        """Decide if we should use a tool based on prompt."""
         prompt_lower = prompt.lower()
         
-        # First pass: Check for clear keyword matches (fast path)
-        # Priority order: distance > tracking > stats > detection
-        keyword_matches = []
+        # Check for tracking keywords first (more specific)
+        if any(keyword in prompt_lower for keyword in TRACKING_KEYWORDS):
+            return "track_objects"
         
-        has_distance = any(keyword in prompt_lower for keyword in DISTANCE_KEYWORDS)
-        has_position = any(keyword in prompt_lower for keyword in POSITION_KEYWORDS)
-        has_tracking = any(keyword in prompt_lower for keyword in TRACKING_KEYWORDS)
-        has_stats = any(keyword in prompt_lower for keyword in STATS_KEYWORDS)
+        # Check for statistics keywords
+        if any(keyword in prompt_lower for keyword in STATS_KEYWORDS):
+            return "get_detection_statistics"
         
-        # For detection keywords, be more selective - don't match generic "targets" when distance keywords are present
-        # Only match detection keywords that don't conflict with distance queries
-        detection_keywords_filtered = [kw for kw in IMAGE_VIDEO_KEYWORDS if kw not in ["targets", "target count", "target identification"]]
-        has_detection = any(keyword in prompt_lower for keyword in detection_keywords_filtered)
-        
-        # If distance keywords are explicitly present, strongly prioritize distance tool
-        # Even if "targets" is mentioned, it's clearly a distance query
-        if has_distance or has_position:
-            keyword_matches.append("estimate_object_distances")
-            # If distance is present, ignore conflicting detection matches from "targets"
-            # This prevents "Distances to all targets" from matching both distance and detection
-            if has_detection and any(kw in prompt_lower for kw in ["targets", "target count", "target identification"]):
-                has_detection = False
-        if has_tracking:
-            keyword_matches.append("track_objects")
-        # Only add stats if distance is NOT present (avoid confusion)
-        if has_stats and not (has_distance or has_position):
-            keyword_matches.append("get_detection_statistics")
-        if has_detection:
-            keyword_matches.append("yolo_object_detection")
-        
-        # If distance keyword is present, prioritize it strongly - use it even with multiple matches
-        if has_distance or has_position:
-            # Return distance tool immediately if distance keywords are present
-            # This prevents LLM from incorrectly choosing statistics
+        # Check for distance keywords
+        if any(keyword in prompt_lower for keyword in DISTANCE_KEYWORDS):
             return "estimate_object_distances"
         
-        # If exactly one match, use it (fast path - no LLM call)
-        if len(keyword_matches) == 1:
-            return keyword_matches[0]
+        # Check for image/video-related keywords (detection)
+        if any(keyword in prompt_lower for keyword in IMAGE_VIDEO_KEYWORDS):
+            return "yolo_object_detection"
         
-        # If multiple matches or ambiguous, use LLM reasoning (only if LLM available)
-        if len(keyword_matches) > 1 or (len(keyword_matches) == 0 and any(kw in prompt_lower for kw in TOOL_KEYWORDS)):
-            try:
-                # Ask LLM to choose the best tool (only if we have an LLM available)
-                if self.llm is not None:
-                    tools_list = "\n".join([f"- {tool}" for tool in keyword_matches] if keyword_matches 
-                                          else ["- yolo_object_detection", "- track_objects", 
-                                                "- get_detection_statistics", "- estimate_object_distances"])
-                    
-                    reasoning_prompt = f"""Given this user prompt, which tool should be used? Respond with ONLY the tool name (no explanation).
-
-IMPORTANT: If the user asks about "distances", "distance", "how far", or "meters away", use estimate_object_distances.
-If the user asks about "statistics", "stats", or "count", use get_detection_statistics.
-
-User prompt: "{prompt}"
-
-Available tools:
-{tools_list}
-
-Respond with only the tool name, or "none" if no tool is needed."""
-                    
-                    # Wrap with SOF template for consistent style (no detection context for tool selection)
-                    wrapped_prompt = self._wrap_prompt_with_sof_template(reasoning_prompt, has_detection_context=False)
-                    
-                    # Get LLM response (truncate to reasonable length for efficiency)
-                    response = await self.llm.ainvoke(wrapped_prompt)
-                    tool_name = response.content.strip().lower() if hasattr(response, 'content') else str(response).strip().lower()
-                    
-                    # Map response to tool name
-                    if "track" in tool_name or tool_name == "track_objects":
-                        return "track_objects"
-                    elif "stat" in tool_name or tool_name == "get_detection_statistics":
-                        return "get_detection_statistics"
-                    elif "distance" in tool_name or tool_name == "estimate_object_distances":
-                        return "estimate_object_distances"
-                    elif "detect" in tool_name or "yolo" in tool_name or tool_name == "yolo_object_detection":
-                        return "yolo_object_detection"
-                    elif "none" in tool_name or tool_name == "none":
-                        return None
-            except Exception as e:
-                # If LLM reasoning fails, fall back to first keyword match or most common
-                if keyword_matches:
-                    return keyword_matches[0]  # Use first match as fallback
-                # If no keywords and LLM failed, check if it looks tool-related
-                if any(kw in prompt_lower for kw in TOOL_KEYWORDS):
-                    # Default to detection for ambiguous tool-related queries
-                    return "yolo_object_detection"
-        
-        # If no keyword matches, return None (will fallback to LLM for general response)
-        return None if not keyword_matches else keyword_matches[0]
+        return None
     
     def _get_tools_description(self) -> str:
         """Get description of available tools."""
@@ -351,8 +313,6 @@ You can ask me to use any of these tools by describing what you want to do in na
     
     def _extract_duration(self, prompt: str) -> float:
         """Extract duration in seconds from prompt (supports '10' or 'ten', max 60 seconds)."""
-        import re
-        
         prompt_lower = prompt.lower()
         
         # First try to find numeric duration (e.g., "10 seconds", "for 5 sec", "for 10", "10 sec")
@@ -374,8 +334,6 @@ You can ask me to use any of these tools by describing what you want to do in na
     
     async def _extract_image_path(self, prompt: str) -> Optional[str]:
         """Extract image path from prompt."""
-        import re
-        
         # Look for file paths
         for pattern in IMAGE_PATH_PATTERNS:
             matches = re.findall(pattern, prompt, re.IGNORECASE)
@@ -403,7 +361,7 @@ You can ask me to use any of these tools by describing what you want to do in na
         # It's an open question if it's a question but doesn't require tools
         return is_question and not requires_tool
     
-    def _truncate_to_words(self, text: str, max_words: int = 30) -> str:
+    def _truncate_to_words(self, text: str, max_words: int = 20) -> str:
         """Truncate text to maximum number of words."""
         words = text.split()
         if len(words) <= max_words:
@@ -414,100 +372,166 @@ You can ask me to use any of these tools by describing what you want to do in na
         truncated = truncated.rstrip('.,;:')
         return truncated + "..."
     
-    def _get_sof_prompt_template(self, has_detection_context: bool = False) -> str:
-        """
-        Get SOF (Special Operations Forces) operator prompt template.
-        Enforces tactical, concise communication style with 45-word limit.
-        
-        Args:
-            has_detection_context: If True, agent is describing actual detected objects.
-                                  If False, use normal language to prevent hallucinations.
-        """
-        if has_detection_context:
-            # Use tactical style only when describing actual detections
-            return """You are a Special Operations Forces (SOF) tactical AI assistant describing real-time surveillance data.
-
-Communication Protocol:
-- Respond in brief, direct operational style
-- Use tactical terminology ONLY for actual detected objects (target, status, intel)
-- Keep ALL responses under 45 words - be concise
-- DO NOT invent scenarios, hostile situations, or objects that were not detected
-- Only describe what was actually detected in the video feed
-- Format: [Status] [Essential info] [Action/Result]
-
-Respond operationally based on actual detection data:"""
-        else:
-            # Use normal, factual language for general questions
-            return """You are a helpful AI assistant. Respond briefly and factually.
-
-Keep responses under 45 words. Be concise and accurate. Do not invent scenarios or objects that don't exist.
-
-Respond:"""
-    
-    def _enforce_response_length(self, response: str, max_words: int = 45) -> str:
-        """
-        Enforce response length limit by truncating to max_words.
-        Tries to truncate at sentence boundary if possible.
-        """
-        words = response.split()
-        if len(words) <= max_words:
-            return response
-        
-        # Try to truncate at sentence boundary
-        truncated = ' '.join(words[:max_words])
-        
-        # Find last sentence-ending punctuation
-        last_period = truncated.rfind('.')
-        last_exclamation = truncated.rfind('!')
-        last_question = truncated.rfind('?')
-        last_sentence_end = max(last_period, last_exclamation, last_question)
-        
-        # If we found a sentence boundary within reasonable distance, use it
-        if last_sentence_end > len(truncated) * 0.7:  # At least 70% through
-            return truncated[:last_sentence_end + 1]
-        
-        # Otherwise truncate and add ellipsis
-        truncated = truncated.rstrip('.,;:')
-        return truncated + "..."
-    
-    def _wrap_prompt_with_sof_template(self, user_prompt: str, has_detection_context: bool = False) -> str:
-        """
-        Wrap user prompt with SOF tactical template.
-        
-        Args:
-            user_prompt: The user's prompt
-            has_detection_context: If True, use tactical style (for actual detections).
-                                  If False, use normal language (for general questions).
-        """
-        sof_template = self._get_sof_prompt_template(has_detection_context=has_detection_context)
-        return f"{sof_template}\n\nUser: {user_prompt}\nAssistant:"
-    
     async def run(self, prompt: str) -> str:
         """Run the agent with a prompt."""
         if self.llm is None:
             return "Error: No LLM available. Cannot run agent."
+        
+        # ALWAYS check video feed if web_viewer is available
+        # Get current frame and run detection to provide context to query router
+        current_detections = None
+        current_frame_path = None
+        
+        if self.web_viewer is not None:
+            try:
+                with self.web_viewer.frame_lock:
+                    if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
+                        current_frame = self.web_viewer.raw_frame.copy()
+                    elif self.web_viewer.frame is not None:
+                        current_frame = self.web_viewer.frame.copy()
+                    else:
+                        current_frame = None
+                
+                if current_frame is not None:
+                    # Run detection on current frame to get context
+                    import tempfile
+                    import cv2
+                    import os
+                    from agent.langchain_tools import yolo_object_detection
+                    
+                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False, dir=PROJECT_ROOT) as tmp_file:
+                        cv2.imwrite(tmp_file.name, current_frame)
+                        current_frame_path = tmp_file.name
+                    
+                    try:
+                        tool_result = await yolo_object_detection.ainvoke({
+                            "image_path": current_frame_path,
+                            "confidence_threshold": getattr(self.web_viewer, 'confidence_threshold', 0.50)
+                        })
+                        
+                        # Parse detection results
+                        if isinstance(tool_result, str):
+                            import json
+                            try:
+                                current_detections = json.loads(tool_result)
+                            except:
+                                current_detections = {"detections": []}
+                        else:
+                            current_detections = tool_result
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[AGENT] Error getting frame detections: {e}")
+                        current_detections = None
+            except Exception as e:
+                if self.verbose:
+                    print(f"[AGENT] Error accessing web_viewer frame: {e}")
         
         # Check if user is asking about available tools (check this FIRST before any tool calling)
         prompt_lower = prompt.lower().strip()
         
         # Check if the prompt is primarily asking about tools/capabilities
         if any(keyword in prompt_lower for keyword in TOOL_QUERY_KEYWORDS):
+            # Clean up temp file if created
+            if current_frame_path and os.path.exists(current_frame_path):
+                os.unlink(current_frame_path)
             return self._get_tools_description()
         
-        # Check if asking about agent capabilities/agentic nature (meta questions)
-        agentic_keywords = ["agentic", "is snowcrash", "what is snowcrash", "capabilities", "what can you do"]
-        if any(keyword in prompt_lower for keyword in agentic_keywords):
-            if "agentic" in prompt_lower or "is snowcrash" in prompt_lower:
-                return "Snowcrash is agentic. Uses hybrid keyword + LLM reasoning for tool selection. Capabilities: object detection (YOLO26-seg), tracking, distance estimation, color detection, spatial reasoning."
-            elif "capabilities" in prompt_lower or "what can you do" in prompt_lower:
-                return self._get_tools_description()
+        # STEP 1: Check for detection history queries FIRST (before ontology routing)
+        prompt_lower = prompt.lower().strip()
         
-        # Check if user is asking about moving objects (using SpeedEstimator/velocity data)
-        is_movement_query = any(keyword in prompt_lower for keyword in MOVEMENT_KEYWORDS)
+        # Pattern 1: "Have any <object> been in the frame/video?"
+        # More flexible pattern to catch variations
+        have_any_pattern = re.compile(r'have\s+any\s+(\w+)\s+been\s+in\s+(?:the\s+)?(?:frame|video)', re.IGNORECASE)
+        have_any_match = have_any_pattern.search(prompt_lower)
+        
+        # Pattern 2: "Give me the history of <object> in video"
+        history_pattern = re.compile(r'give\s+me\s+the\s+history\s+of\s+(\w+)\s+in\s+(?:the\s+)?video', re.IGNORECASE)
+        history_match = history_pattern.search(prompt_lower)
+        
+        # Pattern 3: "history of <object>" (shorter variant)
+        history_short_pattern = re.compile(r'history\s+of\s+(\w+)\s+in\s+(?:the\s+)?video', re.IGNORECASE)
+        history_short_match = history_short_pattern.search(prompt_lower)
+        
+        # Check if any pattern matches
+        if (have_any_match or history_match or history_short_match) and self.web_viewer is not None:
+            try:
+                # Extract object class from whichever pattern matched
+                if have_any_match:
+                    requested_class = have_any_match.group(1).lower()
+                elif history_match:
+                    requested_class = history_match.group(1).lower()
+                else:
+                    requested_class = history_short_match.group(1).lower()
+                
+                # Handle plural forms (cars -> car, people -> person)
+                if requested_class.endswith('s') and len(requested_class) > 1:
+                    requested_class = requested_class[:-1]  # Remove 's'
+                
+                # Get detection history for this object class
+                history = self.web_viewer.get_detection_history(object_class=requested_class)
+                
+                if history.get("detected", False):
+                    frame_count = history.get("frame_count", 0)
+                    total_frames = history.get("total_frames", 0)
+                    first_frame = history.get("first_frame")
+                    last_frame = history.get("last_frame")
+                    
+                    # Calculate duration in minutes (assuming ~30 FPS)
+                    fps = 30.0  # Approximate FPS
+                    if first_frame and last_frame:
+                        frame_span = last_frame - first_frame + 1
+                        duration_seconds = frame_span / fps
+                        duration_minutes = duration_seconds / 60.0
+                    else:
+                        duration_minutes = 0.0
+                    
+                    if frame_count > 0:
+                        if history_match or history_short_match:
+                            # Detailed history response
+                            response = f"History of {requested_class}(s) in video:\n"
+                            response += f"  - Detected in {frame_count} out of {total_frames} frames\n"
+                            if first_frame:
+                                response += f"  - First detected at frame {first_frame}\n"
+                            if last_frame and last_frame != first_frame:
+                                response += f"  - Last detected at frame {last_frame}\n"
+                            if duration_minutes > 0:
+                                response += f"  - Duration: {duration_minutes:.2f} minutes ({duration_seconds:.1f} seconds)\n"
+                            response += f"  - Frame span: frames {first_frame} to {last_frame}"
+                        else:
+                            # Simple yes/no response
+                            response = f"Yes, {requested_class}(s) have been detected in the video. "
+                            response += f"They appeared in {frame_count} out of {total_frames} frames. "
+                            if first_frame:
+                                response += f"First detected at frame {first_frame}"
+                            if last_frame and last_frame != first_frame:
+                                response += f", last detected at frame {last_frame}"
+                            if duration_minutes > 0:
+                                response += f". Duration: {duration_minutes:.2f} minutes"
+                            response += "."
+                        return response
+                    else:
+                        return f"No, {requested_class}(s) have not been detected in the video yet."
+                else:
+                    return f"No, {requested_class}(s) have not been detected in the video yet."
+            
+            except Exception as e:
+                if self.verbose:
+                    import traceback
+                    print(f"[AGENT] Detection history check error: {e}")
+                    print(f"[AGENT] Traceback: {traceback.format_exc()}")
+                # Fall through to other checks
+        
+        # STEP 2: Check for movement queries (before ontology routing)
+        # Movement queries need tracking data, not object detection
+        is_movement_query = any(keyword in prompt_lower for keyword in [
+            "are objects moving", "are the objects moving", "which objects are moving",
+            "what is moving", "what's moving", "objects moving", "moving objects",
+            "is anything moving", "detect movement", "check movement",
+            "are any objects moving", "any objects moving", "moving in video"
+        ])
         
         if is_movement_query and self.web_viewer is not None:
-            # Use SpeedEstimator approach: check velocity/speed from tracking data
-            # Threshold: object is "moving" if average speed > 1.0 px/s or velocity magnitude > 1.0 px/s
+            # Use tracking data to check for movement
             MOVEMENT_THRESHOLD = 1.0  # pixels per second
             
             try:
@@ -531,19 +555,189 @@ Respond:"""
                         })
                 
                 if moving_objects:
-                    # Format response with moving objects
-                    response = "Moving objects detected:\n"
+                    # Format response with moving objects - name them
+                    object_names = [obj['class'] for obj in moving_objects]
+                    unique_classes = list(set(object_names))
+                    if len(unique_classes) == 1:
+                        response = f"Yes, {unique_classes[0]}(s) are moving: "
+                    else:
+                        response = f"Yes, {', '.join(unique_classes)} are moving: "
+                    
+                    # Add details for each moving object
                     for obj in moving_objects:
-                        response += f"  - {obj['class']} (ID: {obj['track_id']}): {obj['speed']} px/s\n"
-                    return response.strip()
+                        response += f"{obj['class']} (ID: {obj['track_id']}), "
+                    response = response.rstrip(", ") + "."
+                    return response
                 else:
                     return "No objects are currently moving."
             
             except Exception as e:
-                return f"Error checking movement: {str(e)}. Please ensure the web viewer is running."
+                if self.verbose:
+                    print(f"[AGENT] Movement check error: {e}")
+                # Fall through to ontology routing
+        
+        # STEP 2: Route through query ontology (after movement check)
+        # This ensures queries like "How far away is the bench?" are properly routed
+        # even if they don't explicitly mention "in the video"
+        early_ontology_result = None
+        early_tool_name = None
+        skip_early_checks = False
+        
+        if self.query_ontology:
+            try:
+                early_ontology_result = self.query_ontology.quick_route(prompt)
+                if self.verbose:
+                    print(f"[AGENT] Ontology match (early): {early_ontology_result}")
+                
+                # Extract tool and object class from ontology
+                early_tool_name = early_ontology_result.get("tool")
+                early_confidence = early_ontology_result.get("confidence", 0.0)
+                
+                # If ontology found a tool match with reasonable confidence, skip early keyword checks
+                # This ensures queries like "How far away is the bench?" go directly to distance tool
+                if early_tool_name and early_confidence > 0.3:
+                    skip_early_checks = True
+                    if self.verbose:
+                        print(f"[AGENT] Ontology routed to {early_tool_name} (confidence: {early_confidence:.2f}), skipping early keyword checks")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[AGENT] Query ontology error (early): {e}")
+                early_ontology_result = None
+        
+        # PRIORITY CHECK: If asking "what objects" and we have detections, handle directly
+        object_query_keywords = ["what objects", "list objects", "what can you see", "objects in the video", 
+                                  "objects in video", "what's in the video", "what is in the video", 
+                                  "what are in the video", "detect objects", "what objects are"]
+        is_object_query = any(phrase in prompt_lower for phrase in object_query_keywords)
+        
+        if is_object_query and current_detections is not None:
+            # Get raw frame from web viewer and run detection directly
+            try:
+                with self.web_viewer.frame_lock:
+                    if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
+                        current_frame = self.web_viewer.raw_frame.copy()
+                    elif self.web_viewer.frame is not None:
+                        current_frame = self.web_viewer.frame.copy()
+                    else:
+                        current_frame = None
+                
+                if current_frame is None:
+                    return "The web viewer is running but no frame is available yet. Please wait a moment and try again."
+                
+                # Run object detection directly
+                import tempfile
+                import cv2
+                import os
+                from agent.langchain_tools import yolo_object_detection
+                
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False, dir=PROJECT_ROOT) as tmp_file:
+                    cv2.imwrite(tmp_file.name, current_frame)
+                    temp_path = tmp_file.name
+                
+                try:
+                    tool_result = await yolo_object_detection.ainvoke({
+                        "image_path": temp_path,
+                        "confidence_threshold": getattr(self.web_viewer, 'confidence_threshold', 0.50)
+                    })
+                    
+                    # Parse and format results
+                    if isinstance(tool_result, str):
+                        import json
+                        try:
+                            tool_result = json.loads(tool_result)
+                        except:
+                            pass
+                    
+                    if isinstance(tool_result, dict):
+                        detections = tool_result.get("detections", [])
+                        if detections:
+                            class_counts = {}
+                            for det in detections:
+                                cls = det.get("class", "unknown")
+                                class_counts[cls] = class_counts.get(cls, 0) + 1
+                            
+                            total = len(detections)
+                            response = f"I detected {total} object(s) in the current video frame:\n"
+                            for cls, count in sorted(class_counts.items()):
+                                response += f"  - {cls}: {count}\n"
+                            return response.strip()
+                        else:
+                            return "I detected 0 objects in the current video frame."
+                    else:
+                        # Format raw result using Response Formatting Template
+                        from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                        formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                            user_query=prompt,
+                            tool_results=f"DETECTION: {str(tool_result)}"
+                        )
+                        
+                        system_msg = None
+                        user_msg = None
+                        for msg in formatting_prompt:
+                            if msg.type == "system":
+                                system_msg = msg.content
+                            elif msg.type == "human":
+                                user_msg = msg.content
+                        
+                        if hasattr(self.llm, '_acall'):
+                            response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                        else:
+                            import asyncio
+                            response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                            if not isinstance(response, str):
+                                response = response.content if hasattr(response, 'content') else str(response)
+                        
+                        return self._truncate_to_words(response.strip(), max_words=20)
+                finally:
+                    # Keep temp file for router context, will clean up at end
+                    pass
+            except Exception as e:
+                if self.verbose:
+                    import traceback
+                    print(f"[AGENT] Direct object detection error: {traceback.format_exc()}")
+                # Clean up on error
+                if current_frame_path and os.path.exists(current_frame_path):
+                    try:
+                        os.unlink(current_frame_path)
+                    except:
+                        pass
+                return f"Error detecting objects in video frame: {str(e)}"
+        
+        # Skip early keyword checks if ontology already routed the query
+        if not skip_early_checks:
+            # EARLY CHECK: Detect non-vision queries to skip routing and answer directly
+            # This prevents unnecessary LLM calls for general questions (fixes 30-second delay)
+            vision_keywords = (
+                VIDEO_KEYWORDS + IMAGE_VIDEO_KEYWORDS + TRACKING_KEYWORDS + 
+                COLOR_QUERY_KEYWORDS + DISTANCE_KEYWORDS + STATS_KEYWORDS +
+                ["detect", "detection", "object", "objects", "track", "tracking",
+                 "color", "distance", "how many", "count", "what objects",
+                 "environment", "what kind of place", "based on objects",
+                 "hazard", "hazards", "obstruction", "obstacle", "obstacles",
+                 "what do you see", "what's in the frame", "what's visible",
+                 "is the path clear", "clear path", "safe to proceed",
+                 "any dangers", "any threats", "risk", "risks"]
+            )
+            is_vision_query = any(keyword in prompt_lower for keyword in vision_keywords)
+            
+            # If not a vision query, answer directly without routing
+            if not is_vision_query:
+                if self.verbose:
+                    print("[AGENT] Non-vision query detected, answering directly without routing...")
+                try:
+                    response = await self.llm.ainvoke(prompt)
+                    return self._truncate_to_words(response.strip(), max_words=20)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[AGENT] Direct LLM call failed: {e}")
+                    return f"I encountered an error: {str(e)}"
+        
+        # Movement queries are now handled BEFORE ontology routing (see above)
+        # This section is kept as fallback but should not be reached for movement queries
         
         # Check for speed queries - return speed estimates for objects
-        is_speed_query = any(keyword in prompt_lower for keyword in SPEED_KEYWORDS)
+        # SKIP if ontology already routed
+        is_speed_query = any(keyword in prompt_lower for keyword in SPEED_KEYWORDS) if not skip_early_checks else False
         
         if is_speed_query and self.web_viewer is not None:
             try:
@@ -587,12 +781,12 @@ Respond:"""
                 return f"Error getting speed estimates: {str(e)}. Please ensure the web viewer is running."
         
         # Check for "how long" queries - calculate track duration
-        is_how_long_query = any(keyword in prompt_lower for keyword in HOW_LONG_KEYWORDS)
+        # SKIP if ontology already routed
+        is_how_long_query = any(keyword in prompt_lower for keyword in HOW_LONG_KEYWORDS) if not skip_early_checks else False
         
         if is_how_long_query and self.web_viewer is not None:
             try:
                 # Extract track ID or object class from prompt
-                import re
                 track_id_match = re.search(TRACK_ID_PATTERN, prompt_lower)
                 object_class_match = re.search(OBJECT_CLASS_PATTERN, prompt_lower)
                 
@@ -632,201 +826,76 @@ Respond:"""
             except Exception as e:
                 return f"Error calculating track duration: {str(e)}. Please ensure the web viewer is running and tracking is active."
         
-        # Check for spatial/contextual queries - these need detection + LLM reasoning
-        from agent.query_keywords import SPATIAL_RELATIONSHIP_KEYWORDS, CONTEXTUAL_QUERY_KEYWORDS
-        has_spatial = any(kw in prompt_lower for kw in SPATIAL_RELATIONSHIP_KEYWORDS)
-        has_contextual = any(kw in prompt_lower for kw in CONTEXTUAL_QUERY_KEYWORDS)
-        
-        # Handle track ID-based "relative to" queries first (e.g., "Where is ID1 car relative to ID5 car?")
-        if "relative to" in prompt_lower and self.web_viewer is not None:
-            import re
-            # Extract track IDs from prompt (e.g., "ID1", "id:1", "track 1", "ID5")
-            track_id_pattern = r'(?:id|track)[:\s]*(\d+)'
-            track_id_matches = re.findall(track_id_pattern, prompt_lower)
-            
-            if len(track_id_matches) >= 2:
-                try:
-                    target_id = int(track_id_matches[0])
-                    reference_id = int(track_id_matches[1])
-                    
-                    # Get tracking data
-                    with self.web_viewer.tracks_lock:
-                        tracks = list(self.web_viewer.tracks_data.values())
-                    
-                    target_track = None
-                    reference_track = None
-                    
-                    for track in tracks:
-                        track_id = track.get("track_id")
-                        if track_id == target_id:
-                            target_track = track
-                        elif track_id == reference_id:
-                            reference_track = track
-                    
-                    if target_track is None:
-                        return f"Track ID {target_id} not found in current tracking data."
-                    if reference_track is None:
-                        return f"Track ID {reference_id} not found in current tracking data."
-                    
-                    # Get bounding boxes
-                    target_bbox = target_track.get("bbox")
-                    reference_bbox = reference_track.get("bbox")
-                    
-                    if not target_bbox or not reference_bbox:
-                        return f"Bounding box data not available for track IDs {target_id} or {reference_id}."
-                    
-                    # Convert bbox dict to center point
-                    from tools.spatial_utils import compute_object_center, compute_cardinal_direction
-                    
-                    if isinstance(target_bbox, dict):
-                        target_center = compute_object_center(target_bbox)
-                    else:
-                        # Assume it's [x1, y1, x2, y2]
-                        target_center = (
-                            (target_bbox[0] + target_bbox[2]) / 2.0,
-                            (target_bbox[1] + target_bbox[3]) / 2.0
-                        )
-                    
-                    if isinstance(reference_bbox, dict):
-                        reference_center = compute_object_center(reference_bbox)
-                    else:
-                        reference_center = (
-                            (reference_bbox[0] + reference_bbox[2]) / 2.0,
-                            (reference_bbox[1] + reference_bbox[3]) / 2.0
-                        )
-                    
-                    # Compute cardinal direction from reference to target
-                    direction = compute_cardinal_direction(reference_center, target_center)
-                    
-                    target_class = target_track.get("class", "object")
-                    reference_class = reference_track.get("class", "object")
-                    
-                    return f"Track ID {target_id} ({target_class}) is {direction} of Track ID {reference_id} ({reference_class})."
-                    
-                except Exception as e:
-                    import traceback
-                    return f"Error computing relative position: {str(e)}\n{traceback.format_exc()}"
-        
-        if (has_spatial or has_contextual) and self.web_viewer is not None:
-            # Complex spatial/contextual query - run detection and pass to LLM with spatial context
-            try:
-                from tools.spatial_utils import compute_spatial_relationships, format_spatial_context
-                import cv2
-                import json
-                
-                # Get frame from web viewer
-                with self.web_viewer.frame_lock:
-                    if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
-                        current_frame = self.web_viewer.raw_frame.copy()
-                    elif self.web_viewer.frame is not None:
-                        current_frame = self.web_viewer.frame.copy()
-                    else:
-                        current_frame = None
-                
-                if current_frame is None:
-                    return "The web viewer is running but no frame is available yet. Please wait a moment and try again."
-                
-                # Run YOLO detection with segmentation
-                if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
-                    yolo_model = self.web_viewer.model
-                else:
-                    from ultralytics import YOLO
-                    yolo_model = YOLO("yolo26n-seg.pt")
-                
-                # Run detection with segmentation
-                results = yolo_model(current_frame, conf=0.50, task='segment', verbose=False)
-                
-                # Extract detections with full info
-                detections = []
-                result = results[0]
-                if result.boxes is not None:
-                    for i, box in enumerate(result.boxes):
-                        cls_id = int(box.cls)
-                        cls_name = result.names[cls_id]
-                        bbox = box.xyxy[0].tolist()
-                        
-                        detection = {
-                            "class": cls_name,
-                            "confidence": float(box.conf),
-                            "bbox": {
-                                "x1": float(bbox[0]),
-                                "y1": float(bbox[1]),
-                                "x2": float(bbox[2]),
-                                "y2": float(bbox[3])
-                            },
-                            "center": {
-                                "x": float((bbox[0] + bbox[2]) / 2),
-                                "y": float((bbox[1] + bbox[3]) / 2)
-                            }
-                        }
-                        
-                        # Add color if masks available (will be computed below)
-                        # Color detection happens after all detections are collected
-                        
-                        detections.append(detection)
-                
-                if not detections:
-                    return "No objects detected in the current frame. Please ensure objects are visible to the camera."
-                
-                # Add colors to detections using mask-based color detection
-                from tools.color_detection import detect_colors_from_yolo_results
-                color_dets = detect_colors_from_yolo_results(current_frame, results)
-                # Match colors to detections by index
-                for i, det in enumerate(detections):
-                    if i < len(color_dets):
-                        det["color_name"] = color_dets[i].get("color_name")
-                        det["color_rgb"] = color_dets[i].get("color_rgb")
-                
-                # Compute spatial relationships
-                relationships = compute_spatial_relationships(detections)
-                
-                # Format spatial context for LLM
-                spatial_context = format_spatial_context(detections, relationships)
-                
-                # Build enhanced prompt for LLM reasoning
-                reasoning_prompt = f"""User asked: "{prompt}"
-
-{spatial_context}
-
-Based on the detected objects and their spatial relationships, answer the user's question directly and naturally."""
-                
-                # Get LLM response with SOF template
-                if self.llm is None:
-                    return "Error: No LLM available for reasoning."
-                
-                # Use tactical style for spatial queries (describing actual detections)
-                wrapped_prompt = self._wrap_prompt_with_sof_template(reasoning_prompt, has_detection_context=True)
-                llm_response = await self.llm.ainvoke(wrapped_prompt)
-                response = llm_response.content if hasattr(llm_response, 'content') else str(llm_response)
-                
-                # Enforce 45-word limit
-                response = self._enforce_response_length(response.strip(), max_words=45)
-                return response
-                
-            except Exception as e:
-                import traceback
-                return f"Error processing spatial/contextual query: {str(e)}\n{traceback.format_exc()}"
+        # Detection history queries are now handled BEFORE ontology routing (see above)
+        # This section is kept as fallback but should not be reached for detection history queries
         
         # Check for color queries - detect colors of objects in the video
-        is_color_query = any(keyword in prompt_lower for keyword in COLOR_QUERY_KEYWORDS)
+        # SKIP if ontology already routed to a different tool
+        is_color_query = any(keyword in prompt_lower for keyword in COLOR_QUERY_KEYWORDS) if not skip_early_checks or early_tool_name == "color_detection" else False
         
         if is_color_query:
-            # Extract object class from prompt (e.g., "color of cars" -> "car")
-            # Use word boundaries to avoid false matches (e.g., "identification" shouldn't match "cat")
+            # Check if this is the "Color Intel" cached query (should analyze ALL objects, not filter)
+            # The prompt is "Color identification of targets" - should NOT extract object class
+            is_color_intel_query = (
+                "color identification of targets" in prompt_lower or
+                prompt_lower.strip() == "color identification of targets" or
+                (prompt_lower.strip().startswith("color") and "identification" in prompt_lower and "targets" in prompt_lower)
+            )
+            
+            # FAST PATH: Use ontology first to extract object class (skip slow LLM call)
+            # BUT: Skip object class extraction for "Color Intel" - it should analyze ALL objects
             requested_class = None
-            import re
-            for cls in COMMON_OBJECT_CLASSES:
-                # Match whole words only (word boundaries)
-                pattern = r'\b' + re.escape(cls) + r's?\b'
-                if re.search(pattern, prompt_lower):
-                    requested_class = cls
-                    break
+            
+            if not is_color_intel_query:
+                # Only extract object class if NOT the "Color Intel" button query
+                # Try ontology matcher first (fast, no LLM)
+                if self.query_ontology:
+                    try:
+                        requested_class = self.query_ontology.extract_object_class(prompt)
+                        if self.verbose and requested_class:
+                            print(f"[AGENT] Ontology extracted object class: {requested_class}")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[AGENT] Ontology error for color query: {e}")
+                
+                # Fallback to keyword matching (fast, no LLM)
+                if requested_class is None:
+                    for cls in COMMON_OBJECT_CLASSES:
+                        if cls in prompt_lower or f"{cls}s" in prompt_lower:
+                            requested_class = cls
+                            break
+            else:
+                # "Color Intel" query - analyze ALL objects, no filtering
+                # Skip object class extraction entirely
+                requested_class = None
+                if self.verbose:
+                    print(f"[AGENT] Color Intel query detected - analyzing ALL objects (no class filter)")
+            
+            # Only use LLM if ontology/keywords failed AND we need semantic mapping (e.g., "sweater" → "person")
+            # Check if query contains semantic mapping keywords
+            semantic_keywords = ["sweater", "shirt", "jacket", "pants", "dress", "face", "hand", "foot", "head"]
+            needs_semantic_mapping = any(kw in prompt_lower for kw in semantic_keywords)
+            
+            if requested_class is None and needs_semantic_mapping and self.query_router:
+                # Only now call LLM for semantic mapping (e.g., "sweater" → "person")
+                try:
+                    color_understanding = await self.query_router.understand_color_query(prompt)
+                    requested_class = color_understanding.get("object_class")
+                    if self.verbose and requested_class:
+                        semantic_mapping = color_understanding.get("semantic_mapping")
+                        if semantic_mapping:
+                            print(f"[AGENT] LLM semantic mapping: {semantic_mapping}")
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[AGENT] Query router error for color query: {e}")
             
             # Try to get frame from web viewer if running
             if self.web_viewer is not None:
                 try:
                     from tools.color_detection import detect_colors_from_yolo_results
+                    from tools.yolo_utils import load_yolo_model
                     import cv2
+                    import os
                     
                     # Get frame from web viewer
                     with self.web_viewer.frame_lock:
@@ -840,24 +909,150 @@ Based on the detected objects and their spatial relationships, answer the user's
                     if current_frame is None:
                         return "The web viewer is running but no frame is available yet. Please wait a moment and try again."
                     
-                    # Run YOLO detection on the frame (use segmentation for mask-based color detection)
-                    if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
-                        yolo_model = self.web_viewer.model
+                    # Use YOLOE with text prompts for better object detection (like environment detection)
+                    model_path = str(MODELS_DIR / "yolo26n-seg.pt")
+                    
+                    # Check if YOLOE-26 model is available (with text prompt support)
+                    yoloe_models_with_prompts = [
+                        str(MODELS_DIR / "yoloe-26n-seg.pt"),
+                        str(MODELS_DIR / "yoloe-26s-seg.pt"),
+                        str(MODELS_DIR / "yoloe-26m-seg.pt"),
+                        str(MODELS_DIR / "yoloe-26l-seg.pt"),
+                    ]
+                    
+                    # Fallback to prompt-free versions if text-prompt versions not available
+                    yoloe_models_prompt_free = [
+                        str(MODELS_DIR / "yoloe-26n-seg-pf.pt"),
+                        str(MODELS_DIR / "yoloe-26s-seg-pf.pt"),
+                        str(MODELS_DIR / "yoloe-26m-seg-pf.pt"),
+                    ]
+                    
+                    use_yoloe = False
+                    use_text_prompts = False
+                    for yoloe_path in yoloe_models_with_prompts:
+                        if os.path.exists(yoloe_path):
+                            model_path = yoloe_path
+                            use_yoloe = True
+                            use_text_prompts = True
+                            if self.verbose:
+                                print(f"[AGENT] Using YOLOE-26 with text prompts for color detection: {yoloe_path}")
+                            break
+                    
+                    # Fallback to prompt-free if text-prompt versions not found
+                    if not use_yoloe:
+                        for yoloe_path in yoloe_models_prompt_free:
+                            if os.path.exists(yoloe_path):
+                                model_path = yoloe_path
+                                use_yoloe = True
+                                if self.verbose:
+                                    print(f"[AGENT] Using YOLOE-26 prompt-free model for color detection: {yoloe_path}")
+                                break
+                    
+                    # Load YOLO model (auto-detects TensorRT .engine or PyTorch .pt)
+                    # Use YOLOE if available, otherwise fallback to regular YOLO
+                    if use_yoloe:
+                        yolo_model = load_yolo_model(model_path, verbose=self.verbose)
                     else:
-                        from ultralytics import YOLO
-                        yolo_model = YOLO("yolo26n-seg.pt")
+                        # Fallback to regular YOLO or web viewer's model
+                        if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
+                            yolo_model = self.web_viewer.model
+                        else:
+                            from ultralytics import YOLO
+                            yolo_model = YOLO(model_path)
                     
-                    # Run detection with segmentation task to get masks
-                    results = yolo_model(current_frame, conf=0.50, task='segment', verbose=False)
+                    # Check if model is TensorRT engine (requires specific imgsz)
+                    from pathlib import Path
+                    engine_path = Path(model_path).with_suffix('.engine')
+                    is_tensorrt_engine = engine_path.exists()
+                    if is_tensorrt_engine:
+                        imgsz_for_detection = 640  # TensorRT engines are compiled for specific size (640x640)
+                    else:
+                        imgsz_for_detection = 640  # PyTorch models - use smaller size to save memory
                     
-                    # Detect colors using masks (more accurate)
-                    detections_with_colors = detect_colors_from_yolo_results(
-                        current_frame, results, object_class=requested_class
-                    )
+                    # If using YOLOE with text prompts and we have a requested class, use it as text prompt
+                    # BUT: Skip text prompts for "Color Intel" - we want ALL objects
+                    if use_yoloe and use_text_prompts and requested_class and not is_color_intel_query:
+                        try:
+                            # Use the requested object class as a text prompt for targeted detection
+                            # This ensures YOLOE focuses on detecting the specific object we want color info for
+                            color_classes = [requested_class]
+                            
+                            # Also include common variations/synonyms for better detection
+                            if requested_class == "person":
+                                color_classes.extend(["person", "people", "human"])
+                            elif requested_class == "car":
+                                color_classes.extend(["car", "vehicle", "auto", "automobile"])
+                            elif requested_class == "bicycle":
+                                color_classes.extend(["bicycle", "bike", "cycle"])
+                            elif requested_class == "motorcycle":
+                                color_classes.extend(["motorcycle", "motorbike", "bike"])
+                            
+                            # Set text prompts for targeted object detection
+                            yolo_model.set_classes(color_classes, yolo_model.get_text_pe(color_classes))
+                            if self.verbose:
+                                print(f"[AGENT] Set YOLOE text prompts for color detection: {color_classes}")
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[AGENT] Warning: Could not set YOLOE text prompts for color detection: {e}")
+                            use_text_prompts = False  # Fallback to regular detection
+                    
+                    # Run detection with appropriate resolution
+                    # TensorRT engines require imgsz=640 (compiled size)
+                    # PyTorch models use imgsz=640 (memory efficient)
+                    results = yolo_model(current_frame, conf=0.15, verbose=False, imgsz=imgsz_for_detection)
+                    
+                    # Debug: Check if we got any detections
+                    if self.verbose:
+                        result = results[0]
+                        num_detections = len(result.boxes) if result.boxes is not None else 0
+                        has_masks = result.masks is not None if hasattr(result, 'masks') else False
+                        print(f"[AGENT] Detection results: {num_detections} objects, masks={has_masks}")
+                    
+                    # Detect colors using segmentation masks (fast, direct pixel analysis)
+                    # This function uses masks if available, which is more accurate than bounding boxes
+                    try:
+                        detections_with_colors = detect_colors_from_yolo_results(
+                            current_frame, results, object_class=requested_class
+                        )
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[AGENT] Error in color detection: {e}")
+                        # Fallback: check if we have any detections at all
+                        result = results[0]
+                        if result.boxes is None or len(result.boxes) == 0:
+                            obj_text = f"{requested_class} " if requested_class else ""
+                            return f"No {obj_text}objects detected in the current frame. (Using YOLOE-26 for detection)"
+                        else:
+                            # We have detections but color detection failed - return basic info
+                            detections = []
+                            for box in result.boxes:
+                                cls_id = int(box.cls)
+                                cls_name = result.names[cls_id]
+                                if requested_class and cls_name != requested_class:
+                                    continue
+                                detections.append(f"{cls_name} (confidence: {box.conf:.2f})")
+                            if detections:
+                                return f"Detected: {', '.join(detections)}. Color analysis failed - please try again."
+                            else:
+                                obj_text = f"{requested_class} " if requested_class else ""
+                                return f"No {obj_text}objects detected in the current frame. (Using YOLOE-26 for detection)"
                     
                     if not detections_with_colors:
-                        obj_text = f"{requested_class} " if requested_class else ""
-                        return f"No {obj_text}objects detected in the current frame."
+                        # Check if we actually got detections but they were filtered out
+                        result = results[0]
+                        if result.boxes is not None and len(result.boxes) > 0:
+                            # We have detections but they were filtered (wrong class or color detection failed)
+                            detected_classes = [result.names[int(box.cls)] for box in result.boxes]
+                            if requested_class and requested_class not in detected_classes:
+                                return f"No {requested_class} objects detected. Found: {', '.join(set(detected_classes))}. (Using YOLOE-26 for detection)"
+                            else:
+                                return f"Objects detected but color analysis failed. Detected: {', '.join(set(detected_classes))}. (Using YOLOE-26 for detection)"
+                        else:
+                            obj_text = f"{requested_class} " if requested_class else ""
+                            if use_yoloe:
+                                return f"No {obj_text}objects detected in the current frame. (Using YOLOE-26 for detection)"
+                            else:
+                                return f"No {obj_text}objects detected in the current frame."
                     
                     # Format response
                     response_lines = []
@@ -868,7 +1063,16 @@ Based on the detected objects and their spatial relationships, answer the user's
                         
                         response_lines.append(f"{class_name.capitalize()}: {color_name} (RGB: {color_rgb})")
                     
-                    return "\n".join(response_lines)
+                    response = "\n".join(response_lines)
+                    
+                    # Add note about YOLOE usage
+                    if use_yoloe:
+                        if use_text_prompts:
+                            response += "\n\n(Using YOLOE-26 with text prompts for targeted object detection)"
+                        else:
+                            response += "\n\n(Using YOLOE-26 prompt-free mode)"
+                    
+                    return response
                     
                 except Exception as e:
                     import traceback
@@ -880,19 +1084,16 @@ Based on the detected objects and their spatial relationships, answer the user's
                 return "Color detection requires access to the video feed. Please start the tracking viewer first, or ask me to detect objects in the video."
         
         # Check for distance comparison queries - "which car is closer?", "order by distance", etc.
-        is_distance_comparison = any(keyword in prompt_lower for keyword in DISTANCE_COMPARISON_KEYWORDS)
+        # SKIP if ontology already routed to distance tool (handles both simple and comparison queries)
+        is_distance_comparison = any(keyword in prompt_lower for keyword in DISTANCE_COMPARISON_KEYWORDS) if not skip_early_checks or early_tool_name != "estimate_object_distances" else False
         has_distance_keyword = any(keyword in prompt_lower for keyword in DISTANCE_KEYWORDS + DISTANCE_COMPARISON_KEYWORDS)
         
         if is_distance_comparison and self.web_viewer is not None:
             try:
                 # Extract object class from prompt (e.g., "which car" -> "car")
-                # Use word boundaries to avoid false matches
                 requested_class = None
-                import re
                 for cls in COMMON_OBJECT_CLASSES:
-                    # Match whole words only (word boundaries)
-                    pattern = r'\b' + re.escape(cls) + r's?\b'
-                    if re.search(pattern, prompt_lower):
+                    if cls in prompt_lower or f"{cls}s" in prompt_lower:
                         requested_class = cls
                         break
                 
@@ -912,86 +1113,21 @@ Based on the detected objects and their spatial relationships, answer the user's
                 from tools.distance_tool import DistanceTool
                 distance_tool = DistanceTool()
                 
-                viewer_confidence = getattr(self.web_viewer, 'confidence_threshold', 0.50)
+                viewer_confidence = getattr(self.web_viewer, 'confidence_threshold', 0.15)
                 result = await distance_tool.execute({
                     "frame": current_frame,
                     "confidence_threshold": viewer_confidence
                 })
                 
-                # Get tracking data to match detections to track IDs
-                track_data_for_matching = {}
-                with self.web_viewer.tracks_lock:
-                    tracks = list(self.web_viewer.tracks_data.values())
-                    for track in tracks:
-                        track_id = track.get("track_id")
-                        track_class = track.get("class")
-                        track_bbox = track.get("bbox")
-                        if track_id is not None and track_bbox:
-                            track_data_for_matching[track_id] = {
-                                "class": track_class,
-                                "bbox": track_bbox
-                            }
-                
-                # Helper function to compute IoU (Intersection over Union)
-                def compute_iou(bbox1, bbox2):
-                    """Compute IoU between two bounding boxes [x1, y1, x2, y2]."""
-                    x1_1, y1_1, x2_1, y2_1 = bbox1
-                    x1_2, y1_2, x2_2, y2_2 = bbox2
-                    
-                    # Intersection
-                    x1_i = max(x1_1, x1_2)
-                    y1_i = max(y1_1, y1_2)
-                    x2_i = min(x2_1, x2_2)
-                    y2_i = min(y2_1, y2_2)
-                    
-                    if x2_i <= x1_i or y2_i <= y1_i:
-                        return 0.0
-                    
-                    intersection = (x2_i - x1_i) * (y2_i - y1_i)
-                    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-                    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-                    union = area1 + area2 - intersection
-                    
-                    return intersection / union if union > 0 else 0.0
-                
-                # Match detections to track IDs using bounding box overlap (IoU)
-                def match_detection_to_track_id(det_bbox, det_class):
-                    """Match a detection bounding box to a track ID."""
-                    best_match_id = None
-                    best_iou = 0.3  # Minimum IoU threshold
-                    
-                    for track_id, track_info in track_data_for_matching.items():
-                        if track_info["class"] != det_class:
-                            continue
-                        
-                        track_bbox = track_info["bbox"]
-                        if isinstance(track_bbox, dict):
-                            track_bbox_list = [track_bbox.get("x1", 0), track_bbox.get("y1", 0),
-                                             track_bbox.get("x2", 0), track_bbox.get("y2", 0)]
-                        else:
-                            track_bbox_list = track_bbox
-                        
-                        iou = compute_iou(det_bbox, track_bbox_list)
-                        if iou > best_iou:
-                            best_iou = iou
-                            best_match_id = track_id
-                    
-                    return best_match_id
-                
                 # Filter by class if specified, otherwise get all objects with distances
                 detections_with_distances = result.get("detections_with_distances", [])
                 
-                # Filter objects with valid distances and by class if specified, and match to track IDs
+                # Filter objects with valid distances and by class if specified
                 valid_distances = []
                 for det in detections_with_distances:
                     if det.get("distance_meters") is not None:
                         # Filter by class if specified
                         if requested_class is None or det.get("class") == requested_class:
-                            # Match to track ID
-                            det_bbox = det.get("bounding_box", [])
-                            det_class = det.get("class")
-                            track_id = match_detection_to_track_id(det_bbox, det_class) if det_bbox else None
-                            det["track_id"] = track_id
                             valid_distances.append(det)
                 
                 if not valid_distances:
@@ -1003,15 +1139,10 @@ Based on the detected objects and their spatial relationships, answer the user's
                 
                 # Format response
                 response_lines = []
-                
-                # Check if user asked specifically for track ID of closest
-                asks_for_track_id = any(keyword in prompt_lower for keyword in ["track id", "track id of", "track id:", "id of"])
-                
                 if len(valid_distances) == 1:
                     obj = valid_distances[0]
-                    track_id_text = f" (Track ID: {obj['track_id']})" if obj.get('track_id') else ""
                     response_lines.append(
-                        f"The {obj['class']}{track_id_text} is approximately {obj['distance_meters']:.1f} meters "
+                        f"The {obj['class']} is approximately {obj['distance_meters']:.1f} meters "
                         f"({obj['distance_feet']:.1f} feet) away."
                     )
                 else:
@@ -1021,21 +1152,17 @@ Based on the detected objects and their spatial relationships, answer the user's
                         obj_class = obj.get("class", "unknown")
                         distance_m = obj.get("distance_meters")
                         distance_ft = obj.get("distance_feet")
-                        track_id = obj.get("track_id")
-                        track_id_text = f" (Track ID: {track_id})" if track_id else ""
                         response_lines.append(
-                            f"  {i}. {obj_class.capitalize()}{track_id_text}: {distance_m:.1f} meters ({distance_ft:.1f} feet)"
+                            f"  {i}. {obj_class.capitalize()}: {distance_m:.1f} meters ({distance_ft:.1f} feet)"
                         )
                     
                     # Also mention which one is closest
                     closest = valid_distances[0]
-                    track_id_text = f" (Track ID: {closest.get('track_id')})" if closest.get('track_id') else ""
-                    closest_text = f"\nThe closest {requested_class if requested_class else 'object'} is "
-                    if asks_for_track_id and closest.get('track_id'):
-                        closest_text += f"Track ID {closest['track_id']}: the {closest['class']} at {closest['distance_meters']:.1f} meters ({closest['distance_feet']:.1f} feet)."
-                    else:
-                        closest_text += f"the {closest['class']}{track_id_text} at {closest['distance_meters']:.1f} meters ({closest['distance_feet']:.1f} feet)."
-                    response_lines.append(closest_text)
+                    response_lines.append(
+                        f"\nThe closest {requested_class if requested_class else 'object'} is "
+                        f"the {closest['class']} at {closest['distance_meters']:.1f} meters "
+                        f"({closest['distance_feet']:.1f} feet)."
+                    )
                 
                 return "\n".join(response_lines)
                 
@@ -1054,7 +1181,6 @@ Based on the detected objects and their spatial relationships, answer the user's
         # Only return track data if NOT asking for distance
         if wants_data_in_chat and mentions_track_id and not distance_keywords_in_prompt and self.web_viewer is not None:
             # Extract track ID from prompt (look for "ID:1", "track 1", "ID 1", etc.)
-            import re
             track_id_match = re.search(TRACK_ID_PATTERN, prompt_lower)
             if track_id_match:
                 requested_id = int(track_id_match.group(1))
@@ -1109,7 +1235,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                     device_ip = "localhost"
                 
                 viewer = TrackingWebViewer(
-                    model_path="yolo26n-seg.pt",
+                    model_path=str(MODELS_DIR / "yolo26n-seg.pt"),
                     device=0,
                     confidence_threshold=0.25,
                     use_gstreamer=True,
@@ -1141,7 +1267,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                 
                 def run_viewer():
                     run_tracking_viewer(
-                        model_path="yolo26n-seg.pt",
+                        model_path=str(MODELS_DIR / "yolo26n-seg.pt"),
                         device=0,
                         confidence_threshold=0.25,
                         use_gstreamer=True,
@@ -1190,8 +1316,166 @@ Based on the detected objects and their spatial relationships, answer the user's
             
             return response_msg
         
-        # Check if we should use a tool
-        tool_name = await self._should_use_tool(prompt)
+        # STEP 1: Fast keyword-based routing using JSON ontology
+        # Use early ontology result if available, otherwise route again
+        ontology_result = early_ontology_result
+        tool_name = early_tool_name
+        router_result = None
+        
+        if not ontology_result and self.query_ontology:
+            try:
+                ontology_result = self.query_ontology.quick_route(prompt)
+                if self.verbose:
+                    print(f"[AGENT] Ontology match: {ontology_result}")
+                
+                # Extract tool and object class from ontology
+                tool_name = ontology_result.get("tool")
+                object_class = ontology_result.get("object_class")
+                query_type = ontology_result.get("query_type")
+                needs_llm = ontology_result.get("needs_llm", True)
+                direct_call = ontology_result.get("direct_call", False)
+                cached_query = ontology_result.get("cached_query")
+                confidence = ontology_result.get("confidence", 0.0)
+                
+                # AGENTIC VALIDATION: Confidence-based LLM usage
+                # High confidence (>0.8): Skip LLM (simple, unambiguous queries - not truly agentic, but fast)
+                # Medium confidence (0.3-0.8): LLM validates (lightweight check - maintains agentic nature)
+                # Low confidence (<0.3): Full LLM reasoning (truly agentic)
+                
+                use_llm_validation = False
+                if confidence > 0.8:
+                    # Very high confidence - skip LLM entirely (simple queries like "how many objects")
+                    needs_llm = False
+                    if self.verbose:
+                        print(f"[AGENT] Very high confidence ({confidence:.2f}) - skipping LLM (simple query)")
+                elif confidence > 0.3:
+                    # Medium-high confidence - use lightweight LLM validation (maintains agentic nature)
+                    needs_llm = True  # Will use lightweight validation
+                    use_llm_validation = True
+                    if self.verbose:
+                        print(f"[AGENT] Medium confidence ({confidence:.2f}) - using LLM validation (agentic check)")
+                else:
+                    # Low confidence - full LLM reasoning (truly agentic)
+                    needs_llm = True
+                    if self.verbose:
+                        print(f"[AGENT] Low confidence ({confidence:.2f}) - using full LLM reasoning")
+                
+                # SPECIAL CASE: Color queries with direct_call should skip LLM entirely
+                # Color detection uses ontology + YOLOE + segmentation masks (no LLM needed)
+                if tool_name == "color_detection" and direct_call:
+                    needs_llm = False  # Override - color detection doesn't need LLM
+                    use_llm_validation = False
+                    if self.verbose:
+                        print(f"[AGENT] Color detection with direct_call - skipping LLM, using ontology + YOLOE + masks")
+                
+                # If ontology found a cached query or match and doesn't need LLM, use it directly
+                if tool_name and (not needs_llm or direct_call):
+                    if self.verbose:
+                        if cached_query:
+                            print(f"[AGENT] Using cached query '{cached_query}' (direct tool call, no LLM): {tool_name}")
+                        else:
+                            print(f"[AGENT] Using fast ontology match (no LLM needed): {tool_name}")
+                    # Store ontology result for later use
+                    router_result = {
+                        "tool": tool_name,
+                        "query_type": query_type,
+                        "object_class": object_class,
+                        "reasoning": f"cached_query:{cached_query}" if cached_query else "ontology_keyword_match",
+                        "direct_call": direct_call
+                    }
+                elif needs_llm and self.query_router:
+                    # AGENTIC VALIDATION: Use LLM to validate/confirm tool choice
+                    if use_llm_validation:
+                        # Lightweight validation (maintains agentic nature, but faster than full reasoning)
+                        if self.verbose:
+                            print(f"[AGENT] Using lightweight LLM validation for agentic tool confirmation...")
+                        try:
+                            validation_result = await self.query_router.validate_tool_choice(
+                                prompt, tool_name, object_class
+                            )
+                            # Override with validated tool if LLM suggests different
+                            validated_tool = validation_result.get("tool")
+                            validated_object_class = validation_result.get("object_class")
+                            validation_confidence = validation_result.get("confidence", 0.7)
+                            
+                            if validated_tool and validated_tool != tool_name:
+                                if self.verbose:
+                                    print(f"[AGENT] LLM validation overrode tool: {tool_name} → {validated_tool}")
+                                tool_name = validated_tool
+                                object_class = validated_object_class or object_class
+                            
+                            router_result = {
+                                "tool": tool_name,
+                                "query_type": query_type,
+                                "object_class": object_class,
+                                "reasoning": f"ontology_match + llm_validation (confidence: {validation_confidence:.2f})",
+                                "direct_call": False
+                            }
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[AGENT] LLM validation error: {e}, using ontology suggestion")
+                            # Fallback to ontology suggestion
+                            router_result = {
+                                "tool": tool_name,
+                                "query_type": query_type,
+                                "object_class": object_class,
+                                "reasoning": "ontology_keyword_match (validation failed)",
+                                "direct_call": False
+                            }
+                    else:
+                        # STEP 2: Use LLM reasoning only if ontology says it's needed
+                        if self.verbose:
+                            print(f"[AGENT] Ontology requires LLM reasoning, calling router...")
+                        try:
+                            # Pass detection context to router if available
+                            router_result = await self.query_router.understand_query(
+                                prompt, 
+                                detection_context=current_detections if current_detections else None
+                            )
+                            if self.verbose:
+                                print(f"[AGENT] Router result: {router_result}")
+                            
+                            # Check if router says this is NOT a vision query
+                            router_query_type = router_result.get("query_type", "")
+                            if router_query_type == "general" or not router_result.get("tool"):
+                                # Non-vision query - answer directly
+                                if self.verbose:
+                                    print("[AGENT] Router identified non-vision query, answering directly...")
+                                try:
+                                    response = await self.llm.ainvoke(prompt)
+                                    return self._truncate_to_words(response.strip(), max_words=20)
+                                except Exception as e:
+                                    if self.verbose:
+                                        print(f"[AGENT] Direct LLM call failed: {e}")
+                                    return f"I encountered an error: {str(e)}"
+                            
+                            # Override tool selection if router suggests a tool
+                            if router_result.get("tool"):
+                                tool_name_from_router = router_result.get("tool")
+                                # Map router tool names to our tool names
+                                tool_name_mapping = {
+                                    "yolo_object_detection": "yolo_object_detection",
+                                    "get_detection_statistics": "get_detection_statistics",
+                                    "estimate_object_distances": "estimate_object_distances",
+                                    "track_objects": "track_objects",
+                                    "color_detection": None,  # Handled separately
+                                    "gui_viewer": None  # Handled separately
+                                }
+                                mapped_tool = tool_name_mapping.get(tool_name_from_router)
+                                if mapped_tool:
+                                    tool_name = mapped_tool
+                        except Exception as e:
+                            if self.verbose:
+                                print(f"[AGENT] Query router error: {e}")
+                            router_result = None
+            except Exception as e:
+                if self.verbose:
+                    print(f"[AGENT] Query ontology error: {e}")
+                ontology_result = None
+        
+        # STEP 3: Fallback to keyword-based tool selection if ontology/router didn't work
+        if tool_name is None:
+            tool_name = await self._should_use_tool(prompt)
         
         if tool_name and tool_name in self.tool_map:
             if self.verbose:
@@ -1206,7 +1490,9 @@ Based on the detected objects and their spatial relationships, answer the user's
                 
                 # If web viewer is already running and user wants webcam tracking,
                 # tell them tracking is already happening in the GUI
-                if is_webcam_request and self.web_viewer is not None:
+                # BUT skip this if it's a detection history query (already handled above)
+                is_history_query = bool(re.search(r'(have\s+any|history\s+of|give\s+me\s+the\s+history)', prompt_lower, re.IGNORECASE))
+                if is_webcam_request and self.web_viewer is not None and not is_history_query:
                     try:
                         import socket
                         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1230,7 +1516,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                     tool_result = await track_objects.ainvoke({
                         "image_path": image_path,
                         "camera_device": 0,
-                        "confidence_threshold": 0.50,  # Updated to match main.py
+                        "confidence_threshold": 0.15,  # Lower threshold for better small object detection
                         "track_history_frames": 30,
                         "duration_seconds": duration_seconds
                     })
@@ -1244,13 +1530,50 @@ Based on the detected objects and their spatial relationships, answer the user's
                     tool_result = await get_detection_statistics.ainvoke({
                         "reset": False
                     })
-                    return tool_result
+                    
+                    # Format using Response Formatting Template for human sentence
+                    from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                    formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                        user_query=prompt,
+                        tool_results=f"STATISTICS: {tool_result}"
+                    )
+                    
+                    # Extract system and user messages
+                    system_msg = None
+                    user_msg = None
+                    for msg in formatting_prompt:
+                        if msg.type == "system":
+                            system_msg = msg.content
+                        elif msg.type == "human":
+                            user_msg = msg.content
+                    
+                    # Call LLM to format response
+                    if hasattr(self.llm, '_acall'):
+                        response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                    else:
+                        import asyncio
+                        response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                        if not isinstance(response, str):
+                            response = response.content if hasattr(response, 'content') else str(response)
+                    
+                    return self._truncate_to_words(response.strip(), max_words=20)
                 except Exception as e:
                     return f"Error running statistics tool: {str(e)}"
             
             # Handle distance estimation tool
             elif tool_name == "estimate_object_distances":
                 prompt_lower = prompt.lower()
+                
+                # Use query router for spatial relationship understanding (e.g., "person wrt dog")
+                distance_understanding = None
+                if self.query_router and router_result:
+                    try:
+                        distance_understanding = await self.query_router.understand_distance_query(prompt)
+                        if self.verbose:
+                            print(f"[AGENT] Distance understanding: {distance_understanding}")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[AGENT] Distance query router error: {e}")
                 
                 # Check if this is a follow-up query with just an object class (e.g., "do it for bench")
                 # These should be treated as distance queries, not general prompts
@@ -1295,10 +1618,132 @@ Based on the detected objects and their spatial relationships, answer the user's
                     # Use the web viewer's frame for distance estimation
                     try:
                         # Extract requested object class and track ID from prompt
-                        import re
                         prompt_lower = prompt.lower()
                         
-                        # Extract track ID if specified (e.g., "ID:9", "track 9")
+                        # Check for distance between two track IDs (e.g., "Distance from ID:2 to ID:3")
+                        two_track_id_pattern = re.search(r'(?:distance|dist|from).*?(?:id|track)[:\s]*(\d+).*?(?:to|and).*?(?:id|track)[:\s]*(\d+)', prompt_lower)
+                        if two_track_id_pattern and self.web_viewer is not None:
+                            track_id1 = int(two_track_id_pattern.group(1))
+                            track_id2 = int(two_track_id_pattern.group(2))
+                            
+                            # Get track metadata from web viewer
+                            from tools.spatial_utils import compute_distance
+                            
+                            # Access track metadata (stored in tracking loop, accessible via lock)
+                            track_metadata = {}
+                            if hasattr(self.web_viewer, 'track_metadata_lock'):
+                                with self.web_viewer.track_metadata_lock:
+                                    track_metadata = getattr(self.web_viewer, 'track_metadata_history', {})
+                            else:
+                                # Fallback: try to get from tracks_data
+                                with self.web_viewer.tracks_lock:
+                                    tracks = list(self.web_viewer.tracks_data.values())
+                                    # Build metadata from tracks_data
+                                    for track in tracks:
+                                        track_id = track.get("track_id")
+                                        if track_id:
+                                            track_metadata[track_id] = {
+                                                "last_position": {"x": 0, "y": 0},  # Approximate
+                                                "class": track.get("class", "unknown")
+                                            }
+                            
+                            # Get positions for both tracks
+                            track1_info = track_metadata.get(track_id1)
+                            track2_info = track_metadata.get(track_id2)
+                            
+                            if not track1_info:
+                                return self._truncate_to_words(f"Track ID {track_id1} not found.", max_words=20)
+                            if not track2_info:
+                                return self._truncate_to_words(f"Track ID {track_id2} not found.", max_words=20)
+                            
+                            # Get last positions
+                            pos1 = track1_info.get("last_position", {})
+                            pos2 = track2_info.get("last_position", {})
+                            
+                            if not pos1 or not pos2 or "x" not in pos1 or "y" not in pos1 or "x" not in pos2 or "y" not in pos2:
+                                # Try to get positions from current frame tracking
+                                if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
+                                    track_model = self.web_viewer.model
+                                    track_results = track_model.track(current_frame, conf=0.15, persist=True, verbose=False)
+                                    
+                                    pos1 = None
+                                    pos2 = None
+                                    if track_results[0].boxes is not None and track_results[0].boxes.id is not None:
+                                        for box, track_id in zip(track_results[0].boxes, track_results[0].boxes.id):
+                                            if int(track_id) == track_id1:
+                                                bbox = box.xyxy[0].tolist()
+                                                pos1 = {"x": (bbox[0] + bbox[2]) / 2, "y": (bbox[1] + bbox[3]) / 2}
+                                            elif int(track_id) == track_id2:
+                                                bbox = box.xyxy[0].tolist()
+                                                pos2 = {"x": (bbox[0] + bbox[2]) / 2, "y": (bbox[1] + bbox[3]) / 2}
+                                    
+                                    if not pos1 or not pos2:
+                                        return self._truncate_to_words(f"Could not find positions for one or both tracks in current frame.", max_words=20)
+                                else:
+                                    return self._truncate_to_words(f"Position data not available for one or both tracks.", max_words=20)
+                            
+                            # Calculate pixel distance
+                            pixel_distance = compute_distance((pos1["x"], pos1["y"]), (pos2["x"], pos2["y"]))
+                            
+                            # Get frame to estimate real-world distance
+                            # We'll use the average distance from camera to both objects
+                            if current_frame is not None:
+                                # Estimate real-world distance using distance tool
+                                from tools.distance_tool import DistanceTool
+                                distance_tool = DistanceTool()
+                                
+                                # Get bounding boxes for both tracks from current frame
+                                if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
+                                    track_model = self.web_viewer.model
+                                    track_results = track_model.track(current_frame, conf=0.15, persist=True, verbose=False)
+                                    
+                                    bbox1 = None
+                                    bbox2 = None
+                                    class1 = track1_info.get("class", "unknown")
+                                    class2 = track2_info.get("class", "unknown")
+                                    
+                                    if track_results[0].boxes is not None and track_results[0].boxes.id is not None:
+                                        for box, track_id in zip(track_results[0].boxes, track_results[0].boxes.id):
+                                            if int(track_id) == track_id1:
+                                                bbox1 = box.xyxy[0].tolist()
+                                                cls_id = int(box.cls)
+                                                class1 = track_model.names[cls_id]
+                                            elif int(track_id) == track_id2:
+                                                bbox2 = box.xyxy[0].tolist()
+                                                cls_id = int(box.cls)
+                                                class2 = track_model.names[cls_id]
+                                    
+                                    # Calculate distances from camera to each object
+                                    image_height = current_frame.shape[0]
+                                    dist1_m = distance_tool._estimate_distance(bbox1, class1, image_height) if bbox1 else None
+                                    dist2_m = distance_tool._estimate_distance(bbox2, class2, image_height) if bbox2 else None
+                                    
+                                    if dist1_m and dist2_m:
+                                        # Approximate distance between objects
+                                        # Use pixel distance and average depth for rough conversion
+                                        avg_depth = (dist1_m + dist2_m) / 2.0
+                                        
+                                        # Rough conversion: pixel distance to meters (approximate)
+                                        # Assume ~100 pixels per meter at average distance (rough estimate)
+                                        pixels_per_meter = 100.0 / max(avg_depth, 1.0)  # Rough estimate
+                                        estimated_distance_m = pixel_distance / pixels_per_meter
+                                        estimated_distance_ft = estimated_distance_m * 3.28084
+                                        
+                                        return self._truncate_to_words(
+                                            f"Distance from {class1} (ID:{track_id1}) to {class2} (ID:{track_id2}): "
+                                            f"{estimated_distance_m:.2f}m ({estimated_distance_ft:.1f}ft). "
+                                            f"Object 1: {dist1_m:.1f}m. Object 2: {dist2_m:.1f}m.",
+                                            max_words=20
+                                        )
+                            
+                            # Fallback: return pixel distance only
+                            return self._truncate_to_words(
+                                f"Distance from {track1_info.get('class', 'object')} (ID:{track_id1}) to "
+                                f"{track2_info.get('class', 'object')} (ID:{track_id2}): {pixel_distance:.1f}px.",
+                                max_words=20
+                            )
+                        
+                        # Extract track ID if specified (e.g., "ID:9", "track 9") - SINGLE track distance
                         requested_track_id = None
                         track_id_match = re.search(TRACK_ID_PATTERN, prompt_lower)
                         if track_id_match:
@@ -1339,7 +1784,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                             # Run distance estimation on the frame
                             result = await distance_tool.execute({
                                 "frame": current_frame,
-                                "confidence_threshold": 0.50
+                                "confidence_threshold": 0.15
                             })
                             
                             # Match detections to track ID by using the web viewer's own tracking model
@@ -1351,12 +1796,12 @@ Based on the detected objects and their spatial relationships, answer the user's
                             else:
                                 # Fallback: create new model (less ideal for track ID consistency)
                                 from ultralytics import YOLO
-                                track_model = YOLO("yolo26n-seg.pt")
+                                track_model = YOLO(str(MODELS_DIR / "yolo26n-seg.pt"))
                             
                             # Run tracking with the same model instance
                             track_results = track_model.track(
                                 current_frame,
-                                conf=0.50,
+                                conf=0.15,
                                 persist=True,  # Maintain track persistence
                                 verbose=False
                             )
@@ -1407,7 +1852,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                         distance_tool = DistanceTool()
                         
                         # Use web viewer's confidence threshold (defaults to 0.50 if not set)
-                        viewer_confidence = getattr(self.web_viewer, 'confidence_threshold', 0.50)
+                        viewer_confidence = getattr(self.web_viewer, 'confidence_threshold', 0.15)
                         
                         # If web viewer has a model, we could use it, but distance_tool has its own model
                         # For now, just use the same confidence threshold
@@ -1446,36 +1891,32 @@ Based on the detected objects and their spatial relationships, answer the user's
                                     matching_distances.append({
                                         "class": det.get("class"),
                                         "distance_meters": det.get("distance_meters"),
-                                        "distance_feet": det.get("distance_feet")
+                                        "distance_feet": det.get("distance_feet"),
+                                        "confidence": det.get("confidence", 0)
                                     })
                         
                         if matching_distances:
-                            # Check if user asked for "each", "all", "every", "list", or "targets"
-                            prompt_lower = prompt.lower()
-                            wants_all = any(word in prompt_lower for word in ["each", "all", "every", "list", "targets"])
+                            # Return all detected objects with distances (detailed format like terminal)
+                            # Sort by distance (closest to farthest)
+                            matching_distances.sort(key=lambda x: x["distance_meters"])
                             
-                            # If query explicitly mentions "distances" (plural) or "all", return all distances
-                            if ("distances" in prompt_lower and not requested_class) or (wants_all and len(matching_distances) > 1):
-                                # Return all objects with distances
-                                response_lines = [f"Distances to all detected objects ({len(matching_distances)} total):\n"]
+                            response_lines = []
+                            if requested_class:
+                                # If specific class requested, show all instances of that class
+                                response_lines.append(f"Distance to {requested_class}s ({len(matching_distances)} detected):")
                                 for i, obj in enumerate(matching_distances, 1):
                                     response_lines.append(
-                                        f"  {i}. {obj['class'].capitalize()}: {obj['distance_meters']:.1f} meters "
-                                        f"({obj['distance_feet']:.1f} feet) away"
+                                        f"  {i}. {obj['class']}: {obj['distance_meters']:.2f}m ({obj['distance_feet']:.1f}ft) - conf={obj.get('confidence', 0):.2f}"
                                     )
-                                return "\n".join(response_lines)
-                            elif len(matching_distances) == 1:
-                                # Only one object, return it
-                                obj = matching_distances[0]
-                                return f"The {obj['class']} is approximately {obj['distance_meters']:.1f} meters ({obj['distance_feet']:.1f} feet) away."
                             else:
-                                # Return nearest matching object distance in simple format
-                                nearest = min(matching_distances, key=lambda x: x["distance_meters"])
-                                obj_class = requested_class or nearest["class"]
-                                distance_m = nearest["distance_meters"]
-                                distance_ft = nearest["distance_feet"]
-                                
-                                return f"The {obj_class} is approximately {distance_m:.1f} meters ({distance_ft:.1f} feet) away."
+                                # Show all detected objects
+                                response_lines.append(f"Distances to all detected objects ({len(matching_distances)} total):")
+                                for i, obj in enumerate(matching_distances, 1):
+                                    response_lines.append(
+                                        f"  {i}. {obj['class']}: {obj['distance_meters']:.2f}m ({obj['distance_feet']:.1f}ft) - conf={obj.get('confidence', 0):.2f}"
+                                    )
+                            
+                            return "\n".join(response_lines)
                         elif result.get("detections_with_distances"):
                             # Objects detected but not matching the request
                             classes = [d.get("class") for d in result.get("detections_with_distances", [])]
@@ -1495,7 +1936,7 @@ Based on the detected objects and their spatial relationships, answer the user's
                     tool_result_str = await estimate_object_distances.ainvoke({
                         "image_path": image_path,
                         "camera_device": 0,
-                        "confidence_threshold": 0.50  # Match confidence threshold used elsewhere
+                        "confidence_threshold": 0.15  # Lower threshold for better small object detection
                     })
                     
                     # Parse the JSON result to find distances
@@ -1503,10 +1944,124 @@ Based on the detected objects and their spatial relationships, answer the user's
                         tool_result = json.loads(tool_result_str)
                         
                         # Extract requested object class and track ID from prompt
-                        import re
                         prompt_lower = prompt.lower()
                         
-                        # Extract track ID if specified
+                        # Check for distance between two track IDs (e.g., "Distance from ID:2 to ID:3")
+                        two_track_id_pattern = re.search(r'(?:distance|dist|from).*?(?:id|track)[:\s]*(\d+).*?(?:to|and).*?(?:id|track)[:\s]*(\d+)', prompt_lower)
+                        if two_track_id_pattern and self.web_viewer is not None:
+                            track_id1 = int(two_track_id_pattern.group(1))
+                            track_id2 = int(two_track_id_pattern.group(2))
+                            
+                            # Get track metadata from web viewer
+                            from tools.spatial_utils import compute_distance
+                            
+                            # Access track metadata (stored in tracking loop, accessible via lock)
+                            track_metadata = {}
+                            if hasattr(self.web_viewer, 'track_metadata_lock'):
+                                with self.web_viewer.track_metadata_lock:
+                                    track_metadata = getattr(self.web_viewer, 'track_metadata_history', {})
+                            else:
+                                # Fallback: try to get from tracks_data
+                                with self.web_viewer.tracks_lock:
+                                    tracks = list(self.web_viewer.tracks_data.values())
+                                    # Build metadata from tracks_data
+                                    for track in tracks:
+                                        track_id = track.get("track_id")
+                                        if track_id:
+                                            track_metadata[track_id] = {
+                                                "last_position": {"x": 0, "y": 0},  # Approximate
+                                                "class": track.get("class", "unknown")
+                                            }
+                            
+                            # Get positions for both tracks
+                            track1_info = track_metadata.get(track_id1)
+                            track2_info = track_metadata.get(track_id2)
+                            
+                            if not track1_info:
+                                return f"Track ID {track_id1} not found in tracking data."
+                            if not track2_info:
+                                return f"Track ID {track_id2} not found in tracking data."
+                            
+                            # Get last positions
+                            pos1 = track1_info.get("last_position", {})
+                            pos2 = track2_info.get("last_position", {})
+                            
+                            if not pos1 or not pos2:
+                                return f"Position data not available for one or both tracks."
+                            
+                            # Calculate pixel distance
+                            pixel_distance = compute_distance((pos1["x"], pos1["y"]), (pos2["x"], pos2["y"]))
+                            
+                            # Get frame to estimate real-world distance
+                            # We'll use the average distance from camera to both objects
+                            current_frame = None
+                            if hasattr(self.web_viewer, 'get_latest_raw_frame'):
+                                current_frame = self.web_viewer.get_latest_raw_frame()
+                            elif hasattr(self.web_viewer, 'raw_frame'):
+                                with self.web_viewer.frame_lock:
+                                    current_frame = self.web_viewer.raw_frame.copy() if self.web_viewer.raw_frame is not None else None
+                            
+                            if current_frame is not None:
+                                # Estimate real-world distance using distance tool
+                                from tools.distance_tool import DistanceTool
+                                distance_tool = DistanceTool()
+                                
+                                # Get bounding boxes for both tracks from current frame
+                                if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
+                                    track_model = self.web_viewer.model
+                                    track_results = track_model.track(current_frame, conf=0.15, persist=True, verbose=False)
+                                    
+                                    bbox1 = None
+                                    bbox2 = None
+                                    class1 = track1_info.get("class", "unknown")
+                                    class2 = track2_info.get("class", "unknown")
+                                    
+                                    if track_results[0].boxes is not None and track_results[0].boxes.id is not None:
+                                        for box, track_id in zip(track_results[0].boxes, track_results[0].boxes.id):
+                                            if int(track_id) == track_id1:
+                                                bbox1 = box.xyxy[0].tolist()
+                                            elif int(track_id) == track_id2:
+                                                bbox2 = box.xyxy[0].tolist()
+                                    
+                                    # Calculate distances from camera to each object
+                                    image_height = current_frame.shape[0]
+                                    dist1_m = distance_tool._estimate_distance(bbox1, class1, image_height) if bbox1 else None
+                                    dist2_m = distance_tool._estimate_distance(bbox2, class2, image_height) if bbox2 else None
+                                    
+                                    if dist1_m and dist2_m:
+                                        # Use law of cosines to estimate distance between objects
+                                        # We need the angle between the two objects from camera's perspective
+                                        # For simplicity, use pixel distance as approximation
+                                        # More accurate: use depth estimation if available
+                                        
+                                        # Approximate: assume objects are at similar depth
+                                        # Distance between objects ≈ pixel_distance * (avg_depth / focal_length_pixels)
+                                        # For now, provide pixel distance and estimated real-world distance
+                                        avg_depth = (dist1_m + dist2_m) / 2.0
+                                        
+                                        # Rough conversion: pixel distance to meters (approximate)
+                                        # This is a simplified conversion - actual requires camera calibration
+                                        # Assume ~100 pixels per meter at average distance (rough estimate)
+                                        pixels_per_meter = 100.0 / max(avg_depth, 1.0)  # Rough estimate
+                                        estimated_distance_m = pixel_distance / pixels_per_meter
+                                        estimated_distance_ft = estimated_distance_m * 3.28084
+                                        
+                                        return self._truncate_to_words(
+                                            f"Distance from {class1} (ID:{track_id1}) to {class2} (ID:{track_id2}): "
+                                            f"approximately {estimated_distance_m:.2f}m ({estimated_distance_ft:.1f}ft) "
+                                            f"(pixel distance: {pixel_distance:.1f}px). "
+                                            f"Object 1 is {dist1_m:.1f}m away, Object 2 is {dist2_m:.1f}m away.",
+                                            max_words=20
+                                        )
+                            
+                            # Fallback: return pixel distance only
+                            return self._truncate_to_words(
+                                f"Distance from {track1_info.get('class', 'object')} (ID:{track_id1}) to "
+                                f"{track2_info.get('class', 'object')} (ID:{track_id2}): {pixel_distance:.1f} pixels.",
+                                max_words=20
+                            )
+                        
+                        # Extract track ID if specified (single track distance query)
                         requested_track_id = None
                         track_id_match = re.search(r'(?:id|track)[:\s]*(\d+)', prompt_lower)
                         if track_id_match:
@@ -1528,42 +2083,64 @@ Based on the detected objects and their spatial relationships, answer the user's
                                     matching_distances.append({
                                         "class": det.get("class"),
                                         "distance_meters": det.get("distance_meters"),
-                                        "distance_feet": det.get("distance_feet")
+                                        "distance_feet": det.get("distance_feet"),
+                                        "confidence": det.get("confidence", 0)
                                     })
                         
                         if matching_distances:
-                            # Check if user asked for "each", "all", "every", "list", or "targets"
-                            prompt_lower = prompt.lower()
-                            wants_all = any(word in prompt_lower for word in ["each", "all", "every", "list", "targets"])
+                            # Return all detected objects with distances (detailed format like terminal)
+                            # Sort by distance (closest to farthest)
+                            matching_distances.sort(key=lambda x: x["distance_meters"])
                             
-                            # If query explicitly mentions "distances" (plural) or "all", return all distances
-                            if ("distances" in prompt_lower and not requested_class) or (wants_all and len(matching_distances) > 1):
-                                # Return all objects with distances
-                                response_lines = [f"Distances to all detected objects ({len(matching_distances)} total):\n"]
+                            response_lines = []
+                            if requested_track_id:
+                                # Track ID specified - show that specific track
+                                matching_track = next((d for d in matching_distances if d.get("track_id") == requested_track_id), None)
+                                if matching_track:
+                                    return f"Track ID {requested_track_id} ({matching_track['class']}): {matching_track['distance_meters']:.2f}m ({matching_track['distance_feet']:.1f}ft) - conf={matching_track.get('confidence', 0):.2f}"
+                                else:
+                                    return f"Track ID {requested_track_id} not found in distance results."
+                            elif requested_class:
+                                # If specific class requested, show all instances of that class
+                                response_lines.append(f"Distance to {requested_class}s ({len(matching_distances)} detected):")
                                 for i, obj in enumerate(matching_distances, 1):
                                     response_lines.append(
-                                        f"  {i}. {obj['class'].capitalize()}: {obj['distance_meters']:.1f} meters "
-                                        f"({obj['distance_feet']:.1f} feet) away"
+                                        f"  {i}. {obj['class']}: {obj['distance_meters']:.2f}m ({obj['distance_feet']:.1f}ft) - conf={obj.get('confidence', 0):.2f}"
                                     )
-                                return "\n".join(response_lines)
-                            elif len(matching_distances) == 1:
-                                # Only one object, return it
-                                obj = matching_distances[0]
-                                if requested_track_id:
-                                    return f"The {obj['class']} (track ID: {requested_track_id}) is approximately {obj['distance_meters']:.1f} meters ({obj['distance_feet']:.1f} feet) away."
-                                else:
-                                    return f"The {obj['class']} is approximately {obj['distance_meters']:.1f} meters ({obj['distance_feet']:.1f} feet) away."
                             else:
-                                # Return nearest matching object distance in simple format
-                                nearest = min(matching_distances, key=lambda x: x["distance_meters"])
-                                obj_class = requested_class or nearest["class"]
-                                distance_m = nearest["distance_meters"]
-                                distance_ft = nearest["distance_feet"]
-                                
-                                if requested_track_id:
-                                    return f"The {obj_class} (track ID: {requested_track_id}) is approximately {distance_m:.1f} meters ({distance_ft:.1f} feet) away."
-                                else:
-                                    return f"The {obj_class} is approximately {distance_m:.1f} meters ({distance_ft:.1f} feet) away."
+                                # Show all detected objects
+                                response_lines.append(f"Distances to all detected objects ({len(matching_distances)} total):")
+                                for i, obj in enumerate(matching_distances, 1):
+                                    response_lines.append(
+                                        f"  {i}. {obj['class']}: {obj['distance_meters']:.2f}m ({obj['distance_feet']:.1f}ft) - conf={obj.get('confidence', 0):.2f}"
+                                    )
+                            
+                            # Format using Response Formatting Template for human sentence
+                            from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                            formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                user_query=prompt,
+                                tool_results=f"DISTANCE: {chr(10).join(response_lines)}"
+                            )
+                            
+                            # Extract system and user messages
+                            system_msg = None
+                            user_msg = None
+                            for msg in formatting_prompt:
+                                if msg.type == "system":
+                                    system_msg = msg.content
+                                elif msg.type == "human":
+                                    user_msg = msg.content
+                            
+                            # Call LLM to format response
+                            if hasattr(self.llm, '_acall'):
+                                response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                            else:
+                                import asyncio
+                                response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                                if not isinstance(response, str):
+                                    response = response.content if hasattr(response, 'content') else str(response)
+                            
+                            return self._truncate_to_words(response.strip(), max_words=20)
                         elif tool_result.get("detections_with_distances"):
                             # Objects detected but not matching the request
                             classes = [d.get("class") for d in tool_result.get("detections_with_distances", [])]
@@ -1574,14 +2151,237 @@ Based on the detected objects and their spatial relationships, answer the user's
                         else:
                             return "No objects detected in the current frame. Please ensure objects are visible to the camera."
                     except json.JSONDecodeError:
-                        # If parsing fails, return the raw result
-                        return tool_result_str
+                        # If parsing fails, format the raw result using Response Formatting Template
+                        from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                        formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                            user_query=prompt,
+                            tool_results=f"DISTANCE: {tool_result_str}"
+                        )
+                        
+                        # Extract system and user messages
+                        system_msg = None
+                        user_msg = None
+                        for msg in formatting_prompt:
+                            if msg.type == "system":
+                                system_msg = msg.content
+                            elif msg.type == "human":
+                                user_msg = msg.content
+                        
+                        # Call LLM to format response
+                        if hasattr(self.llm, '_acall'):
+                            response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                        else:
+                            import asyncio
+                            response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                            if not isinstance(response, str):
+                                response = response.content if hasattr(response, 'content') else str(response)
+                        
+                        return self._truncate_to_words(response.strip(), max_words=20)
                         
                 except Exception as e:
                     return f"Error running distance estimation tool: {str(e)}"
             
             # Handle YOLO detection tool
             elif tool_name == "yolo_object_detection":
+                # Use query router for semantic understanding (e.g., "sweater" → "person")
+                detection_understanding = None
+                if self.query_router:
+                    try:
+                        detection_understanding = await self.query_router.understand_detection_query(prompt)
+                        if self.verbose:
+                            print(f"[AGENT] Detection understanding: {detection_understanding}")
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"[AGENT] Detection query router error: {e}")
+                
+                # Check if this is an environment inference query
+                is_environment_query = (
+                    detection_understanding and 
+                    detection_understanding.get("is_environment_query", False)
+                ) or any(keyword in prompt.lower() for keyword in [
+                    "what kind of environment", "what kind of place", "what environment",
+                    "what type of environment", "based on objects", "what kind of location",
+                    "what setting", "what scene"
+                ])
+                
+                # Handle environment inference query
+                if is_environment_query and self.web_viewer is not None:
+                    try:
+                        # Get frame from web viewer
+                        with self.web_viewer.frame_lock:
+                            if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
+                                current_frame = self.web_viewer.raw_frame.copy()
+                            elif self.web_viewer.frame is not None:
+                                current_frame = self.web_viewer.frame.copy()
+                            else:
+                                current_frame = None
+                        
+                        if current_frame is None:
+                            return "The web viewer is running but no frame is available yet. Please wait a moment and try again."
+                        
+                        # FORCE YOLOE-26 usage for environment detection
+                        from tools.yolo_utils import load_yolo_model
+                        import tempfile
+                        import cv2
+                        import os
+                        
+                        # FORCE YOLOE-26 - no fallback to regular YOLO26
+                        # Check if YOLOE-26 model is available (with text prompt support)
+                        # Prefer non-prompt-free versions for text prompting
+                        yoloe_models_with_prompts = [
+                            str(MODELS_DIR / "yoloe-26n-seg.pt"),
+                            str(MODELS_DIR / "yoloe-26s-seg.pt"),
+                            str(MODELS_DIR / "yoloe-26m-seg.pt"),
+                            str(MODELS_DIR / "yoloe-26l-seg.pt"),
+                        ]
+                        
+                        # Fallback to prompt-free versions if text-prompt versions not available
+                        yoloe_models_prompt_free = [
+                            str(MODELS_DIR / "yoloe-26n-seg-pf.pt"),
+                            str(MODELS_DIR / "yoloe-26s-seg-pf.pt"),
+                            str(MODELS_DIR / "yoloe-26m-seg-pf.pt"),
+                        ]
+                        
+                        model_path = None
+                        use_yoloe = False
+                        use_text_prompts = False
+                        
+                        # Try text-prompt versions first
+                        for yoloe_path in yoloe_models_with_prompts:
+                            if os.path.exists(yoloe_path):
+                                model_path = yoloe_path
+                                use_yoloe = True
+                                use_text_prompts = True
+                                if self.verbose:
+                                    print(f"[AGENT] Using YOLOE-26 with text prompts: {yoloe_path}")
+                                break
+                        
+                        # Fallback to prompt-free if text-prompt versions not found
+                        if not use_yoloe:
+                            for yoloe_path in yoloe_models_prompt_free:
+                                if os.path.exists(yoloe_path):
+                                    model_path = yoloe_path
+                                    use_yoloe = True
+                                    if self.verbose:
+                                        print(f"[AGENT] Using YOLOE-26 prompt-free model: {yoloe_path}")
+                                    break
+                        
+                        # REQUIRE YOLOE - raise error if not found
+                        if not use_yoloe or model_path is None:
+                            available_models = yoloe_models_with_prompts + yoloe_models_prompt_free
+                            return f"ERROR: YOLOE-26 model required for environment detection. Please download one of: {available_models}"
+                        
+                        # Load YOLO model (auto-detects TensorRT .engine or PyTorch .pt)
+                        yolo_model = load_yolo_model(model_path, verbose=self.verbose)
+                        
+                        # Check if model is TensorRT engine (requires specific imgsz)
+                        from pathlib import Path
+                        engine_path = Path(model_path).with_suffix('.engine')
+                        is_tensorrt_engine = engine_path.exists()
+                        if is_tensorrt_engine:
+                            imgsz_for_detection = 640  # TensorRT engines are compiled for specific size (640x640)
+                        else:
+                            imgsz_for_detection = 640  # PyTorch models - use smaller size to save memory
+                        
+                        # If using YOLOE with text prompts, set environment-related classes
+                        if use_yoloe and use_text_prompts:
+                            # Define comprehensive environment object classes
+                            env_classes = [
+                                # Outdoor/Street
+                                "car", "truck", "bus", "motorcycle", "bicycle", "traffic light", 
+                                "stop sign", "road sign", "sidewalk", "crosswalk", "street",
+                                # Park/Nature
+                                "tree", "grass", "bench", "park", "playground", "fountain",
+                                # Indoor/Commercial
+                                "chair", "table", "desk", "computer", "monitor", "keyboard",
+                                "restaurant", "cafe", "store", "shop",
+                                # Residential
+                                "bed", "sofa", "couch", "television", "refrigerator", "oven",
+                                "kitchen", "bathroom", "window", "door",
+                                # People/Animals
+                                "person", "dog", "cat", "bird",
+                                # Other
+                                "building", "house", "office", "school"
+                            ]
+                            try:
+                                # Set text prompts for environment detection
+                                yolo_model.set_classes(env_classes, yolo_model.get_text_pe(env_classes))
+                                if self.verbose:
+                                    print(f"[AGENT] Set YOLOE text prompts for {len(env_classes)} environment classes")
+                            except Exception as e:
+                                if self.verbose:
+                                    print(f"[AGENT] Warning: Could not set YOLOE text prompts: {e}")
+                                use_text_prompts = False  # Fallback to regular detection
+                        
+                        # Run detection with appropriate resolution
+                        # TensorRT engines require imgsz=640 (compiled size)
+                        # PyTorch models use imgsz=640 (memory efficient)
+                        results = yolo_model(current_frame, conf=0.15, verbose=False, imgsz=imgsz_for_detection)
+                        
+                        # Extract all detected objects
+                        all_detections = []
+                        for result in results:
+                            boxes = result.boxes
+                            if boxes is not None:
+                                for box in boxes:
+                                    cls_id = int(box.cls[0])
+                                    conf = float(box.conf[0])
+                                    cls_name = result.names[cls_id]
+                                    all_detections.append({
+                                        "class": cls_name,
+                                        "confidence": conf
+                                    })
+                        
+                        if not all_detections:
+                            return "I couldn't detect any objects in the current frame. Please ensure objects are visible to the camera."
+                        
+                        # Count objects by class
+                        class_counts = {}
+                        for det in all_detections:
+                            cls = det["class"]
+                            class_counts[cls] = class_counts.get(cls, 0) + 1
+                        
+                        # Create object list for LLM analysis
+                        objects_list = ", ".join([f"{count} {cls}{'s' if count > 1 else ''}" for cls, count in sorted(class_counts.items())])
+                        
+                        # Use LLM to infer environment based on detected objects
+                        environment_prompt = f"""Based on the objects detected in the video frame, what kind of environment or location is this?
+
+Detected objects: {objects_list}
+
+Analyze the combination of objects and infer the environment type. Examples:
+- cars + traffic lights + road signs → street/road
+- benches + trees + dogs + grass → park
+- chairs + tables + people + plates → restaurant/cafe
+- desks + computers + monitors → office
+- beds + dressers + windows → bedroom
+- kitchen appliances + countertops → kitchen
+
+Respond with ONLY the environment type (e.g., "street", "park", "restaurant", "office", "bedroom", "kitchen", "outdoor", "indoor", etc.). Be concise."""
+                        
+                        environment_response = await self.llm.ainvoke(environment_prompt)
+                        environment_type = environment_response.strip()
+                        
+                        # Format final response
+                        response = f"Based on the objects detected in the video, this appears to be a **{environment_type}** environment.\n\n"
+                        response += f"Detected objects: {objects_list}\n"
+                        response += f"\n(Total: {len(all_detections)} objects across {len(class_counts)} different classes)"
+                        
+                        if use_yoloe:
+                            if use_text_prompts:
+                                response += "\n\n(Using YOLOE-26 with text prompts for targeted environment object detection)"
+                            else:
+                                response += "\n\n(Using YOLOE-26 prompt-free mode for comprehensive object recognition)"
+                        
+                        return response
+                        
+                    except Exception as e:
+                        import traceback
+                        error_msg = f"Error analyzing environment: {str(e)}"
+                        if self.verbose:
+                            print(f"[AGENT] Environment query error: {traceback.format_exc()}")
+                        return error_msg
+                
                 # Check if webcam/video stream is requested
                 prompt_lower = prompt.lower()
                 
@@ -1592,11 +2392,12 @@ Based on the detected objects and their spatial relationships, answer the user's
                 # Keywords like "how many", "count", "what objects", "list", "tell me", etc.
                 wants_data_in_chat = any(phrase in prompt_lower for phrase in COUNT_QUERY_KEYWORDS + PRINT_DATA_KEYWORDS + DESCRIPTIVE_DATA_KEYWORDS + [
                     "what objects", "list objects", "what can you see", "detect and tell", 
-                    "detect and report", "detected objects"
+                    "detect and report", "detected objects", "objects in the video", "objects in video",
+                    "what's in the video", "what is in the video", "what are in the video"
                 ])
                 
-                # If user wants data in chat AND web viewer is running, run detection and return results
-                # Even if not explicitly asking for video, if web viewer is running and they want data, give it
+                # PRIORITY: If asking about objects in video AND web viewer is running, run detection FIRST
+                # This bypasses query router to ensure we get object detection, not color detection
                 if wants_data_in_chat and self.web_viewer is not None:
                     # Get raw frame from web viewer and run detection
                     try:
@@ -1655,8 +2456,30 @@ Based on the detected objects and their spatial relationships, answer the user's
                                     else:
                                         return "I detected 0 objects in the current frame."
                                 else:
-                                    # Return the raw result if we can't parse it
-                                    return str(tool_result)
+                                    # Format raw result using Response Formatting Template
+                                    from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                                    formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                        user_query=prompt,
+                                        tool_results=f"DETECTION: {str(tool_result)}"
+                                    )
+                                    
+                                    system_msg = None
+                                    user_msg = None
+                                    for msg in formatting_prompt:
+                                        if msg.type == "system":
+                                            system_msg = msg.content
+                                        elif msg.type == "human":
+                                            user_msg = msg.content
+                                    
+                                    if hasattr(self.llm, '_acall'):
+                                        response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                                    else:
+                                        import asyncio
+                                        response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                                        if not isinstance(response, str):
+                                            response = response.content if hasattr(response, 'content') else str(response)
+                                    
+                                    return self._truncate_to_words(response.strip(), max_words=20)
                             elif any(keyword in prompt_lower for keyword in DESCRIPTIVE_DATA_KEYWORDS):
                                 # Descriptive data request - return formatted detection data with timestamps
                                 if isinstance(tool_result, str):
@@ -1704,23 +2527,65 @@ Based on the detected objects and their spatial relationships, answer the user's
                                     else:
                                         return "I detected 0 objects in the current frame."
                                 else:
-                                    # Return the raw result if we can't parse it
-                                    return str(tool_result)
+                                    # Format raw result using Response Formatting Template
+                                    from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                                    formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                        user_query=prompt,
+                                        tool_results=f"DETECTION: {str(tool_result)}"
+                                    )
+                                    
+                                    system_msg = None
+                                    user_msg = None
+                                    for msg in formatting_prompt:
+                                        if msg.type == "system":
+                                            system_msg = msg.content
+                                        elif msg.type == "human":
+                                            user_msg = msg.content
+                                    
+                                    if hasattr(self.llm, '_acall'):
+                                        response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                                    else:
+                                        import asyncio
+                                        response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                                        if not isinstance(response, str):
+                                            response = response.content if hasattr(response, 'content') else str(response)
+                                    
+                                    return self._truncate_to_words(response.strip(), max_words=20)
                             else:
-                                # Generic response - let LLM format it with SOF template
-                                response_prompt = f"""User asked: {prompt}
-
-I ran object detection and got: {tool_result}
-
-Respond directly to the user based on these results. Do not give examples or explain your process. Just answer naturally."""
+                                # Generic response - format using Response Formatting Template
+                                from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                                formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                    user_query=prompt,
+                                    tool_results=f"DETECTION: {tool_result}"
+                                )
                                 
-                                # Use tactical style when describing actual detection results
-                                wrapped_prompt = self._wrap_prompt_with_sof_template(response_prompt, has_detection_context=True)
-                                llm_response = await self.llm.ainvoke(wrapped_prompt)
-                                response = llm_response.content if hasattr(llm_response, 'content') else str(llm_response)
+                                system_msg = None
+                                user_msg = None
+                                for msg in formatting_prompt:
+                                    if msg.type == "system":
+                                        system_msg = msg.content
+                                    elif msg.type == "human":
+                                        user_msg = msg.content
                                 
-                                # Enforce 45-word limit with SOF style
-                                return self._enforce_response_length(response.strip(), max_words=45)
+                                if hasattr(self.llm, '_acall'):
+                                    response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                                else:
+                                    import asyncio
+                                    response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                                    if not isinstance(response, str):
+                                        response = response.content if hasattr(response, 'content') else str(response)
+                                
+                                return self._truncate_to_words(response.strip(), max_words=20)
+                                
+                                # OLD CODE - replaced with Response Formatting Template
+                                # response_prompt = f"""User asked: {prompt}
+
+# I ran object detection and got: {tool_result}
+
+# Respond directly to the user based on these results. Do not give examples or explain your process. Just answer naturally."""
+                                
+                                llm_response = await self.llm.ainvoke(response_prompt)
+                                return self._truncate_to_words(llm_response.strip(), max_words=20)
                         
                         finally:
                             # Clean up temp file
@@ -1730,72 +2595,10 @@ Respond directly to the user based on these results. Do not give examples or exp
                     except Exception as e:
                         return f"Error running detection on current frame: {str(e)}"
                 
-                # Check if user is asking for positions (not just viewing)
-                prompt_lower = prompt.lower()
-                is_position_query = any(word in prompt_lower for word in POSITION_KEYWORDS)
-                
-                # If asking for positions, return actual position data instead of redirecting to GUI
-                if is_position_query and self.web_viewer is not None:
-                    try:
-                        # Get current frame and run detection
-                        with self.web_viewer.frame_lock:
-                            if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
-                                current_frame = self.web_viewer.raw_frame.copy()
-                            elif self.web_viewer.frame is not None:
-                                current_frame = self.web_viewer.frame.copy()
-                            else:
-                                current_frame = None
-                        
-                        if current_frame is None:
-                            return "The web viewer is running but no frame is available yet. Please wait a moment and try again."
-                        
-                        # Run detection with segmentation
-                        if hasattr(self.web_viewer, 'model') and self.web_viewer.model is not None:
-                            yolo_model = self.web_viewer.model
-                        else:
-                            from ultralytics import YOLO
-                            yolo_model = YOLO("yolo26n-seg.pt")
-                        
-                        results = yolo_model(current_frame, conf=0.50, task='segment', verbose=False)
-                        
-                        # Extract positions
-                        detections = []
-                        result = results[0]
-                        if result.boxes is not None:
-                            for i, box in enumerate(result.boxes):
-                                cls_id = int(box.cls)
-                                cls_name = result.names[cls_id]
-                                bbox = box.xyxy[0].tolist()
-                                center_x = (bbox[0] + bbox[2]) / 2
-                                center_y = (bbox[1] + bbox[3]) / 2
-                                
-                                detections.append({
-                                    "class": cls_name,
-                                    "confidence": float(box.conf),
-                                    "center": {"x": round(center_x, 1), "y": round(center_y, 1)},
-                                    "bbox": {"x1": round(bbox[0], 1), "y1": round(bbox[1], 1), 
-                                            "x2": round(bbox[2], 1), "y2": round(bbox[3], 1)}
-                                })
-                        
-                        if not detections:
-                            return "No objects detected in the current frame. Please ensure objects are visible to the camera."
-                        
-                        # Format response
-                        response_lines = [f"Positions of all detected objects ({len(detections)} total):\n"]
-                        for i, det in enumerate(detections, 1):
-                            response_lines.append(
-                                f"  {i}. {det['class'].capitalize()} (confidence: {det['confidence']:.1%}): "
-                                f"center at ({det['center']['x']:.1f}, {det['center']['y']:.1f}), "
-                                f"bbox: ({det['bbox']['x1']:.1f}, {det['bbox']['y1']:.1f}) to "
-                                f"({det['bbox']['x2']:.1f}, {det['bbox']['y2']:.1f})"
-                            )
-                        return "\n".join(response_lines)
-                    except Exception as e:
-                        import traceback
-                        return f"Error getting object positions: {str(e)}\n{traceback.format_exc()}"
-                
                 # If web viewer is already running and user just wants to view (not get data), redirect to GUI
-                if is_webcam_request and self.web_viewer is not None:
+                # BUT skip this if it's a detection history query (already handled above)
+                is_history_query = bool(re.search(r'(have\s+any|history\s+of|give\s+me\s+the\s+history)', prompt_lower, re.IGNORECASE))
+                if is_webcam_request and self.web_viewer is not None and not is_history_query:
                     try:
                         import socket
                         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1944,17 +2747,12 @@ Respond directly to the user based on these results. Do not give examples or exp
 
 I ran object detection and got: {tool_result}
 
-Respond directly to the user based on these results. Do not give examples or explain your process. Just answer naturally."""
+Respond directly to the user based on these results. Maximum 20 words. Do not give examples or explain your process. Just answer naturally."""
                     
-                    wrapped_prompt = self._wrap_prompt_with_sof_template(response_prompt)
-                    llm_response_obj = await self.llm.ainvoke(wrapped_prompt)
-                    llm_response = llm_response_obj.content if hasattr(llm_response_obj, 'content') else str(llm_response_obj)
+                    llm_response = await self.llm.ainvoke(response_prompt)
                     
                     # Clean up response - remove any example text or extra formatting
                     response = llm_response.strip()
-                    
-                    # Enforce 45-word limit
-                    response = self._enforce_response_length(response, max_words=45)
                     
                     # Remove common patterns that indicate example responses
                     lines = response.split('\n')
@@ -1972,29 +2770,220 @@ Respond directly to the user based on these results. Do not give examples or exp
                             cleaned_lines.append(line)
                     
                     cleaned_response = ' '.join(cleaned_lines).strip()
-                    return cleaned_response if cleaned_response else response
+                    # Enforce 20-word limit
+                    final_response = cleaned_response if cleaned_response else response
+                    return self._truncate_to_words(final_response, max_words=20)
                     
                 except Exception as e:
                     return f"Error running tool {tool_name}: {str(e)}"
         
-        # No tool needed, check if this is about actual detections or a general question
-        # Use tactical style only when describing actual detected objects
-        # Use normal language for general questions to prevent hallucinations
-        is_detection_related = any(keyword in prompt_lower for keyword in [
-            "detected", "detection", "objects in", "what objects", "what do you see",
-            "tracking", "distance", "color", "in the video", "in the frame"
-        ])
-        has_active_viewer = self.web_viewer is not None
+        # Check if this is a hazard/vision query that should use LLM tool binding
+        # Examples: "Are there any hazards in the frame?", "What do you see?", "Is the path clear?"
+        hazard_vision_keywords = [
+            "hazard", "hazards", "obstruction", "obstacle", "obstacles",
+            "what do you see", "what's in the frame", "what's visible",
+            "is the path clear", "clear path", "safe to proceed",
+            "any dangers", "any threats", "risk", "risks"
+        ]
+        is_hazard_vision_query = any(keyword in prompt_lower for keyword in hazard_vision_keywords)
         
-        # Only use tactical style if user is asking about actual detections AND viewer is active
-        use_tactical = is_detection_related and has_active_viewer
+        # If hazard/vision query and web viewer is running, use LLM tool binding
+        if is_hazard_vision_query and self.web_viewer is not None:
+            try:
+                # Get current frame from web viewer
+                with self.web_viewer.frame_lock:
+                    if hasattr(self.web_viewer, 'raw_frame') and self.web_viewer.raw_frame is not None:
+                        current_frame = self.web_viewer.raw_frame.copy()
+                    elif self.web_viewer.frame is not None:
+                        current_frame = self.web_viewer.frame.copy()
+                    else:
+                        current_frame = None
+                
+                if current_frame is not None:
+                    # Create vision tool with current frame
+                    vision_tool = create_vision_tool(current_frame)
+                    
+                    # Bind tool to LLM (LLM can now call this tool)
+                    try:
+                        # Try to bind tools (if LLM supports it)
+                        if hasattr(self.llm, 'bind_tools'):
+                            llm_with_tools = self.llm.bind_tools([vision_tool])
+                        elif hasattr(self.llm, 'with_tools'):
+                            # Alternative method name
+                            llm_with_tools = self.llm.with_tools([vision_tool])
+                        else:
+                            # Fallback: Manual tool calling via prompt
+                            if self.verbose:
+                                print("[AGENT] LLM doesn't support bind_tools, using manual tool calling")
+                            llm_with_tools = self.llm
+                            
+                            # Manual approach: Call tool first, then format with Response Formatting Template
+                            tool_result = vision_tool.invoke({})
+                            
+                            # Format using Response Formatting Template for human sentence
+                            from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                            formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                                user_query=prompt,
+                                tool_results=f"HAZARD DETECTION: {tool_result}"
+                            )
+                            
+                            # Extract system and user messages
+                            system_msg = None
+                            user_msg = None
+                            for msg in formatting_prompt:
+                                if msg.type == "system":
+                                    system_msg = msg.content
+                                elif msg.type == "human":
+                                    user_msg = msg.content
+                            
+                            # Call LLM to format response
+                            if hasattr(self.llm, '_acall'):
+                                response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                            else:
+                                response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                                if not isinstance(response, str):
+                                    response = response.content if hasattr(response, 'content') else str(response)
+                            
+                            return self._truncate_to_words(response.strip(), max_words=20)
+                    except AttributeError:
+                        # LLM doesn't support tool binding, use manual approach
+                        if self.verbose:
+                            print("[AGENT] LLM doesn't support tool binding, using manual tool calling")
+                        # Always use manual approach for reliability
+                        tool_result = vision_tool.invoke({})
+                        
+                        # Format using Response Formatting Template for human sentence
+                        from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                        formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                            user_query=prompt,
+                            tool_results=f"HAZARD DETECTION: {tool_result}"
+                        )
+                        
+                        # Extract system and user messages
+                        system_msg = None
+                        user_msg = None
+                        for msg in formatting_prompt:
+                            if msg.type == "system":
+                                system_msg = msg.content
+                            elif msg.type == "human":
+                                user_msg = msg.content
+                        
+                        # Call LLM to format response
+                        if hasattr(self.llm, '_acall'):
+                            response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                        else:
+                            response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                            if not isinstance(response, str):
+                                response = response.content if hasattr(response, 'content') else str(response)
+                        
+                        return self._truncate_to_words(response.strip(), max_words=20)
+                    
+                    # If we got here, tool binding was attempted but may not work reliably
+                    # Force manual approach instead
+                    if self.verbose:
+                        print("[AGENT] Forcing manual tool calling for reliability")
+                    tool_result = vision_tool.invoke({})
+                    
+                    # Format using Response Formatting Template for human sentence
+                    from agent.prompt_templates import RESPONSE_FORMATTING_TEMPLATE
+                    formatting_prompt = RESPONSE_FORMATTING_TEMPLATE.format_messages(
+                        user_query=prompt,
+                        tool_results=f"HAZARD DETECTION: {tool_result}"
+                    )
+                    
+                    # Extract system and user messages
+                    system_msg = None
+                    user_msg = None
+                    for msg in formatting_prompt:
+                        if msg.type == "system":
+                            system_msg = msg.content
+                        elif msg.type == "human":
+                            user_msg = msg.content
+                    
+                    # Call LLM to format response
+                    if hasattr(self.llm, '_acall'):
+                        response = await self.llm._acall(user_msg, system_prompt=system_msg)
+                    else:
+                        response = await asyncio.to_thread(self.llm.invoke, formatting_prompt)
+                        if not isinstance(response, str):
+                            response = response.content if hasattr(response, 'content') else str(response)
+                    
+                    return self._truncate_to_words(response.strip(), max_words=20)
+                    
+                    # If tool binding worked, invoke LLM (it will call the tool if needed)
+                    if self.verbose:
+                        print("[AGENT] Using LLM with vision tool binding for hazard detection")
+                    
+                    # Create a prompt that encourages tool use
+                    tool_prompt = f"""You are a tactical AI assistant analyzing real-time video.
+
+User query: {prompt}
+
+You have access to a vision tool that can detect objects in the current frame.
+If the user is asking about hazards, obstacles, or what's visible, use the detect_objects_in_frame tool first.
+
+Call the tool, then provide a concise response (under 20 words) based on the results."""
+                    
+                    # Invoke LLM (it should call the tool)
+                    response = await llm_with_tools.ainvoke(tool_prompt)
+                    
+                    # Check if response contains tool calls (for OpenAI-compatible APIs)
+                    # For now, if response is just text, return it
+                    # In future, we can parse tool calls from response
+                    if isinstance(response, str):
+                        return response.strip()
+                    else:
+                        # Handle structured response with tool calls
+                        # This depends on the LLM implementation
+                        return str(response).strip()
+                else:
+                    if self.verbose:
+                        print("[AGENT] Web viewer running but no frame available")
+            except Exception as e:
+                if self.verbose:
+                    print(f"[AGENT] Vision tool binding error: {e}")
+                # Fall through to regular LLM call
         
-        wrapped_prompt = self._wrap_prompt_with_sof_template(prompt, has_detection_context=use_tactical)
-        response_obj = await self.llm.ainvoke(wrapped_prompt)
-        response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+        # No tool needed, just use LLM
+        try:
+            response = await self.llm.ainvoke(prompt)
+        except RuntimeError as e:
+            # Check if it's a Docker connection error
+            error_str = str(e).lower()
+            if "connection attempts failed" in error_str or "connection error" in error_str:
+                # Docker server not available - try to fallback to llama-cpp-python
+                if self.verbose:
+                    print(f"[AGENT] Docker LLM connection failed, attempting fallback to llama-cpp-python...")
+                
+                # Try to initialize llama-cpp-python fallback
+                if LLAMA_CPP_AVAILABLE and self.model_type:
+                    try:
+                        model_path = self._find_model_by_type(self.model_type)
+                        if model_path:
+                            if self.verbose:
+                                print(f"[AGENT] Initializing llama-cpp-python fallback...")
+                            self.llm = self._create_llama_llm(model_path, temperature=0.7)
+                            response = await self.llm.ainvoke(prompt)
+                        else:
+                            raise RuntimeError(f"Docker failed and model not found for fallback: {e}")
+                    except Exception as fallback_error:
+                        raise RuntimeError(f"Docker LLM failed and fallback also failed: {fallback_error}")
+                else:
+                    raise RuntimeError(f"Docker LLM failed and llama-cpp-python not available: {e}")
+            else:
+                # Other error, re-raise
+                raise
         
-        # Enforce 45-word limit (override the 30-word limit for open questions)
-        response = self._enforce_response_length(response.strip(), max_words=45)
+        # Enforce 20-word limit on ALL responses (not just open questions)
+        # This ensures concise, tactical responses
+        response = self._truncate_to_words(response, max_words=20)
+        
+        # Clean up temp file if it still exists
+        if current_frame_path and os.path.exists(current_frame_path):
+            try:
+                os.unlink(current_frame_path)
+            except:
+                pass
         
         return response
     

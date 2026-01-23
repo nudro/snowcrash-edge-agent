@@ -19,18 +19,24 @@ from mcp.types import Tool
 class YOLODetectionTool:
     """YOLO object detection tool for MCP server."""
     
-    def __init__(self, model_path: str = "yolo26n-seg.pt"):
-        """Initialize YOLO model."""
+    def __init__(self, model_path: str = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt"):
+        """Initialize YOLO model.
+        
+        Supports both PyTorch (.pt) and TensorRT (.engine) formats.
+        Auto-detects format based on file extension.
+        """
         self.model_path = model_path
         self.model = None
         
     def _load_model(self):
-        """Lazy load YOLO model."""
-        if YOLO is None:
-            raise RuntimeError("ultralytics not installed. Install with: pip install ultralytics")
+        """Lazy load YOLO model.
         
+        Auto-detects TensorRT (.engine) or PyTorch (.pt) format.
+        TensorRT provides 2-5x faster inference on Jetson devices.
+        """
         if self.model is None:
-            self.model = YOLO(self.model_path)
+            from tools.yolo_utils import load_yolo_model
+            self.model = load_yolo_model(self.model_path, verbose=True)
     
     def get_tool_schema(self) -> Tool:
         """Get tool schema for MCP."""
@@ -86,9 +92,11 @@ class YOLODetectionTool:
         
         # Try GStreamer pipeline first (better for Jetson)
         # GStreamer pipeline format: v4l2src ! ... ! appsink
+        # Use higher resolution for better small object detection
+        # 1280x720 provides better detail than 640x480
         gstreamer_pipeline = (
             f"v4l2src device=/dev/video{device} ! "
-            "image/jpeg,width=640,height=480,framerate=30/1 ! "
+            "image/jpeg,width=1280,height=720,framerate=30/1 ! "
             "jpegdec ! "
             "videoconvert ! "
             "video/x-raw,format=BGR ! "
@@ -195,8 +203,14 @@ class YOLODetectionTool:
                 detection_image_path = str(img_path)
                 source_info = str(image_path)
             
-            # Run detection
-            results = self.model(str(detection_image_path), conf=confidence)
+            # Run detection with higher resolution for small objects
+            # imgsz=1280 improves small object detection (default is 640)
+            # Lower confidence threshold helps detect smaller/less confident objects
+            results = self.model(
+                str(detection_image_path), 
+                conf=confidence,
+                imgsz=1280  # Higher resolution for better small object detection
+            )
             
             # Parse results
             detections = []

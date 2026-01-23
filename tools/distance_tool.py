@@ -106,7 +106,7 @@ DEFAULT_OBJECT_HEIGHTS = {
 class DistanceTool:
     """Distance estimation tool for MCP server."""
     
-    def __init__(self, model_path: str = "yolo26n-seg.pt", focal_length_mm: float = 3.6, sensor_height_mm: float = 4.69):
+    def __init__(self, model_path: str = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt", focal_length_mm: float = 3.6, sensor_height_mm: float = 4.69):
         """
         Initialize distance estimation tool.
         
@@ -171,9 +171,10 @@ class DistanceTool:
     def _capture_from_webcam(self, device: int = 0, use_gstreamer: bool = True) -> cv2.Mat:
         """Capture a frame from webcam."""
         if use_gstreamer:
+            # Use higher resolution for better small object detection
             gstreamer_pipeline = (
                 f"v4l2src device=/dev/video{device} ! "
-                "image/jpeg,width=640,height=480,framerate=30/1 ! "
+                "image/jpeg,width=1280,height=720,framerate=30/1 ! "
                 "jpegdec ! "
                 "videoconvert ! "
                 "video/x-raw,format=BGR ! "
@@ -277,7 +278,13 @@ class DistanceTool:
             return {"error": "Either 'frame' or 'image_path' must be provided"}
         
         # Run detection
-        results = self.model(image_for_detection, conf=confidence_threshold, verbose=False)
+        # Use higher resolution for better small object detection
+        results = self.model(
+            image_for_detection, 
+            conf=confidence_threshold, 
+            verbose=False,
+            imgsz=1280  # Higher resolution for better small object detection
+        )
         
         # Process detections and estimate distances
         detections_with_distances = []

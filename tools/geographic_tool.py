@@ -46,7 +46,7 @@ class GeographicTool:
     def __init__(self):
         """Initialize geographic tool."""
         self.model = None
-        self.model_path = "yolo26n-seg.pt"
+        self.model_path = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt"
         self.distance_tool = DistanceTool()  # Reuse distance estimation
         
         # Camera calibration parameters (defaults - should be calibrated per device)

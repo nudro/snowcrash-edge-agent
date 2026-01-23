@@ -1,5 +1,7 @@
 # Snowcrash - Edge AI Agent for Jetson Devices
 
+> **⚠️ Active Development Notice:** This is an active project with documentation that is always changing. Features, APIs, and configurations may be updated frequently. Please refer to the latest commit for the most current information.
+
 Real-time object detection and analysis using SLMs (Small Language Models) on NVIDIA Jetson edge devices.
 
 ## 1. Diagram of SnowcrashAgent
@@ -140,9 +142,211 @@ python3 main.py --model phi-3
 - `--gui-viewer chatgui` - Chat interface with text input and quick prompts
 - `--gui-viewer audiogui` - Audio visualization interface with real-time transcription (requires STT, auto-initializes Parakeet)
 
-See **Section 3. Usage** below for complete usage examples with all GUI viewers and models.
+See **Section 4. Usage** below for complete usage examples with all GUI viewers and models.
 
-## 3. Usage
+## 3. Jetson Containers (Alternative: Using llama.cpp via Docker)
+
+**Jetson Containers** provides pre-built Docker containers with llama.cpp optimized for Jetson devices. This is an alternative to using `llama-cpp-python` directly in your Python environment.
+
+### Prerequisites
+
+- Docker installed on Jetson Orin
+- [jetson-containers](https://github.com/dusty-nv/jetson-containers) toolkit installed
+- Models directory mounted into container
+
+### Quick Start
+
+**1. Start container with model volume mounted:**
+
+```bash
+# From host (not inside container)
+# You can run this from any directory - absolute paths are used
+jetson-containers run -v /home/ordun/Documents/snowcrash/models:/models $(autotag llama_cpp)
+```
+
+**2. Inside container, run inference:**
+
+```bash
+# Basic inference with GPU offloading
+llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  -p "Hello, world!" \
+  -ngl 15 \
+  -c 1024
+```
+
+### Memory Configuration for Jetson Orin (8GB)
+
+The Jetson Orin has 8GB unified memory shared between CPU and GPU. Use these settings to avoid out-of-memory errors:
+
+**Recommended Settings:**
+```bash
+llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  -p "Your prompt here" \
+  -ngl 15 \        # Offload 15/28 layers to GPU (adjust based on available memory)
+  -c 1024          # Context size (reduces KV cache memory)
+```
+
+**If you still get OOM errors, try:**
+```bash
+# More conservative (fewer GPU layers)
+llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  -p "Your prompt here" \
+  -ngl 10 \
+  -c 512 \
+  --batch-size 128
+```
+
+**CPU-only fallback:**
+```bash
+# If GPU memory is too constrained
+llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  -p "Your prompt here" \
+  -ngl 0 \
+  -c 1024 \
+  --threads 4
+```
+
+### Using llama-server (HTTP API)
+
+Start an OpenAI-compatible HTTP server:
+
+```bash
+# Start server
+llama-server -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+  --port 8080 \
+  --n-gpu-layers 15 \
+  --ctx-size 1024 \
+  --batch-size 256
+
+# Test with curl
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+### Using the Wrapper Script (Production-Ready)
+
+For production use, a wrapper script handles memory fragmentation automatically:
+
+**1. Transfer script to Orin:**
+```bash
+# From your development machine
+scp scripts/llama_wrapper.sh orin-nano:~/Documents/snowcrash/scripts/
+```
+
+**2. Start container with scripts directory mounted:**
+```bash
+jetson-containers run \
+  -v /home/ordun/Documents/snowcrash/models:/models \
+  -v /home/ordun/Documents/snowcrash/scripts:/scripts \
+  $(autotag llama_cpp)
+```
+
+**3. Use the wrapper script:**
+```bash
+# Inside container - uses defaults (8 GPU layers, falls back to CPU)
+/scripts/llama_wrapper.sh
+
+# Custom prompt
+/scripts/llama_wrapper.sh /models/llama3.2/model.gguf "What is AI?"
+
+# Custom settings
+/scripts/llama_wrapper.sh /models/llama3.2/model.gguf "Hello" 8 512 4
+
+# Show help
+/scripts/llama_wrapper.sh --help
+```
+
+**What the wrapper does:**
+- Clears memory caches before running (reduces fragmentation)
+- Tries GPU mode first (8 layers by default)
+- Automatically falls back to CPU if GPU allocation fails
+- Provides colored status output
+
+### Troubleshooting
+
+**Out of Memory Errors:**
+
+If you're getting OOM errors even with `-ngl 15 -c 1024` (which worked before), check:
+
+1. **Check what's using GPU memory:**
+   ```bash
+   # From host (exit container first)
+   nvidia-smi
+   # Or
+   tegrastats
+   
+   # Check for other containers
+   docker ps
+   ```
+
+2. **Stop other GPU processes:**
+   ```bash
+   # Stop other containers using GPU
+   docker stop $(docker ps -q)
+   
+   # Or check specific processes
+   fuser -v /dev/nvidia*
+   ```
+
+3. **Try more conservative settings:**
+   ```bash
+   # Reduce GPU layers further
+   llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+     -p "Hello, world!" \
+     -ngl 10 \
+     -c 512 \
+     --batch-size 128
+   ```
+
+4. **If still failing, try even fewer layers:**
+   ```bash
+   llama-cli -m /models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf \
+     -p "Hello, world!" \
+     -ngl 8 \
+     -c 512
+   ```
+
+5. **Check available GPU memory before starting:**
+   ```bash
+   # Inside container
+   nvidia-smi
+   # Look for "Free" memory - you need at least ~1GB free for 15 layers
+   ```
+
+**Model Path Issues:**
+- Remember: `-v` mounts directories, not files
+- Mount parent directory: `-v /home/ordun/Documents/snowcrash/models:/models`
+- Inside container, model will be at `/models/llama3.2/Llama-3.2-3B-Instruct-Q4_K_M.gguf`
+
+**Container Commands:**
+- `jetson-containers` and `autotag` are host commands, not available inside container
+- Exit container: `exit`
+- Start new container: Run `jetson-containers run` command from host
+
+### Comparison: Jetson Containers vs llama-cpp-python
+
+| Feature | Jetson Containers | llama-cpp-python |
+|---------|-------------------|-----------------|
+| **Setup** | Pre-built Docker image | Python package install |
+| **Integration** | Standalone CLI tools | Python/LangChain integration |
+| **Performance** | Optimized C++ binaries | Python wrapper overhead |
+| **Use Case** | Testing, benchmarking, standalone inference | Integrated into Python applications |
+| **Memory** | Same constraints (8GB unified) | Same constraints (8GB unified) |
+
+**For Snowcrash:** The main application uses `llama-cpp-python` for Python integration. Jetson Containers is useful for:
+- Testing models before integration
+- Benchmarking performance
+- Standalone inference without Python overhead
+- Development and debugging
+
+### Resources
+
+- [jetson-containers GitHub](https://github.com/dusty-nv/jetson-containers)
+- [llama.cpp GitHub](https://github.com/ggml-org/llama.cpp)
+- [Jetson Containers Documentation](https://github.com/dusty-nv/jetson-containers/wiki)
+
+## 4. Usage
 
 ### Available Models
 
@@ -277,13 +481,13 @@ python scripts/test_agent.py
 python scripts/view_webcam.py
 ```
 
-## 4. Network
+## 5. Network
 
 **Placeholder:** Air-gapped WiFi network configuration with Opal travel router.
 
 *Network setup documentation will be added here for coordinating multiple edge devices in a mesh network.*
 
-## 5. Device Specifications and Memory Estimates
+## 6. Device Specifications and Memory Estimates
 
 ### Legacy Nano (Jetson Nano)
 
@@ -346,7 +550,7 @@ python scripts/view_webcam.py
 - WhisperSTT only loads if Parakeet unavailable (backup mode)
 - Segmentation masks processed in-place (not stored long-term)
 
-## 6. Agent Design
+## 7. Agent Design
 
 ### Prompt Template: SOF (Special Operations Forces) Operator Style
 
@@ -460,7 +664,7 @@ huggingface-cli login
 # Accept model licenses via web interface, then models will download automatically
 ```
 
-## 7. When and When Not to Use MCP
+## 8. When and When Not to Use MCP
 
 **Current Status: MCP is NOT used in Snowcrash.**
 

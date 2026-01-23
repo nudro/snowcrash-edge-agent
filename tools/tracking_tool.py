@@ -32,7 +32,7 @@ from mcp.types import Tool
 class TrackingTool:
     """Object tracking tool for MCP server using YOLO's built-in tracker."""
     
-    def __init__(self, model_path: str = "yolo26n-seg.pt"):
+    def __init__(self, model_path: str = "/home/ordun/Documents/snowcrash/models/yolo26n-seg.pt"):
         """Initialize tracking tool."""
         self.model_path = model_path
         self.model = None
@@ -193,7 +193,8 @@ class TrackingTool:
             frame,
             conf=confidence_threshold,
             persist=True,  # Persist tracks across frames
-            verbose=False
+            verbose=False,
+            imgsz=1280  # Higher resolution for better small object detection
         )
         
         # Process tracked objects
@@ -335,7 +336,8 @@ class TrackingTool:
                     frame,
                     conf=confidence_threshold,
                     persist=True,
-                    verbose=False
+                    verbose=False,
+                    imgsz=1280  # Higher resolution for better small object detection
                 )
                 
                 # Process tracked objects

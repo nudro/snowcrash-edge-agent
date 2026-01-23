@@ -188,10 +188,18 @@ def detect_colors_from_yolo_results_with_masks(
     
     # Check if we have boxes (detections)
     if result.boxes is None:
+        print("[COLOR_DETECTION] No boxes in results")
         return []
+    
+    num_boxes = len(result.boxes)
+    print(f"[COLOR_DETECTION] Found {num_boxes} detections")
     
     # Check if we have masks (segmentation)
     has_masks = result.masks is not None
+    if has_masks:
+        print(f"[COLOR_DETECTION] Masks available: {len(result.masks.data) if result.masks.data is not None else 0} masks")
+    else:
+        print("[COLOR_DETECTION] No masks available, will use bounding box method")
     
     for i, box in enumerate(result.boxes):
         cls_id = int(box.cls)
@@ -207,7 +215,12 @@ def detect_colors_from_yolo_results_with_masks(
         if has_masks and i < len(result.masks.data):
             try:
                 # Get mask for this detection
-                mask = result.masks.data[i].cpu().numpy()
+                mask_data = result.masks.data[i]
+                # Handle both CPU and GPU tensors
+                if hasattr(mask_data, 'cpu'):
+                    mask = mask_data.cpu().numpy()
+                else:
+                    mask = mask_data.numpy() if hasattr(mask_data, 'numpy') else mask_data
                 
                 # Resize mask to frame size if needed
                 h, w = frame.shape[:2]
@@ -325,7 +338,11 @@ def detect_colors_from_yolo_results(
     # Try mask-based detection first (more accurate with segmentation models)
     try:
         return detect_colors_from_yolo_results_with_masks(frame, yolo_results, object_class)
-    except Exception:
+    except Exception as e:
+        # Log the error for debugging
+        import traceback
+        print(f"[COLOR_DETECTION] Mask-based detection failed: {e}")
+        print(f"[COLOR_DETECTION] Traceback: {traceback.format_exc()}")
         # Fallback to original bounding box method
         detections = []
         
